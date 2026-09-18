@@ -1,0 +1,25 @@
+GTM WW  —  OPEX & HC OUTLOOK  (AMER CXO + Ecosystem kept, plus all L3 orgs)
+============================================
+
+▶ TO JUST VIEW THE DASHBOARD  (no setup — works offline)
+    Double-click   dashboard.html      (opens in your browser)
+      — or   "Open Dashboard.bat"
+    It shows the numbers as of the last refresh (baked into the file):
+    Opex walk, Headcount trended walk, org & role breakdowns, risks & opps.
+
+▶ TO REFRESH LIVE FROM SQL  (optional — one-time setup)
+    You need:
+      • Adobe network / VPN  (to reach FinSys.corp.adobe.com)
+      • Python 3 installed
+      • One-time, from a terminal in this folder:
+            python -m pip install -r requirements.txt
+    Then:
+      • Double-click  "Opex HC Outlook.bat"  → use the  🔄 Refresh  button, OR
+      • "Start Web App.bat"  →  open  http://localhost:8770/  in a browser
+
+NOTES
+  • Live data is filtered to YOUR access (LDAP) — a refresh shows the scope you can see.
+  • Manual items (Open Reqs / Severance): edit "Manual Inputs.xlsx", then Refresh.
+  • This contains internal Adobe finance data — keep it internal; don't post externally.
+
+Questions?  arravi@adobe.com

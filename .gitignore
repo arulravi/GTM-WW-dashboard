@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+
+# Local runtime output
+server_start.log
+snapshots_seen.json
+commentary-*.json
+commentary.json
+commentary_meta.json
+deletion_requests.json
+
+# Generated local snapshots and Claude session artifacts
+snapshots/
+.claude/
+Archive/

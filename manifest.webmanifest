@@ -1,0 +1,16 @@
+{
+  "name": "GTM WW — Opex + HC Summary",
+  "short_name": "GTM WW Opex",
+  "description": "GTM Worldwide (AMER CXO + Ecosystem, plus all L3 orgs) — Opex + Headcount FY26 summary",
+  "start_url": "dashboard.html",
+  "display": "standalone",
+  "background_color": "#0d1017",
+  "theme_color": "#EB1000",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='96' fill='%23EB1000'/%3E%3Ctext x='256' y='372' font-family='Arial,sans-serif' font-size='320' font-weight='bold' fill='white' text-anchor='middle'%3E$%3C/text%3E%3C/svg%3E",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
