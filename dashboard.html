@@ -1517,48 +1517,6 @@ function renderHC(){
       addInto(s,c); sQrf+=qrfEnd; sQ3Qrf+=q3QrfEnd; sPlan+=planEnd; sCur+=c.end;
     }
 
-    function toggleHcWalkHierarchy(){
-      window.__hcWalkHierarchy=(window.__hcWalkHierarchy||"cch")==="cch"?"role":"cch";
-      renderHC();
-    }
-    function renderRoleHcWalk(q, cur, tgt){
-      const title=$("#hcWalkTitle");
-      if(title) title.textContent="👥 Headcount Walk by Role Type L2 / Role Type Description L3 — current quarter";
-      const rows=(D.planning||[]).filter(p=>p.qtr===q && inScope(null,p.l3,p.l4) && p.role_l2 && p.role_l3);
-      if(!rows.length){
-        $("#hcTbl").innerHTML='<tbody><tr><td class="note">Role Type data is not available in this snapshot. Use Refresh to load Role Type L2 / Role Type Description fields.</td></tr></tbody>';
-        return;
-      }
-      const agg={};
-      const add=(key,p,ver)=>{
-        if(p.ver!==ver) return;
-        const l2=p.role_l2, l3=p.role_l3;
-        (agg[l2]=agg[l2]||{}); (agg[l2][l3]=agg[l2][l3]||{beg:0,hires:0,terms:0,end:0});
-        const a=agg[l2][l3];
-        a.beg+=p.beg_hc||0; a.hires+=(p.hires||0)+(p.committed||0)+(p.open_reqs||0);
-        a.terms+=(p.terms||0)+(p.known_terms||0); a.end+=p.end_hc||0;
-      };
-      rows.forEach(p=>add("cur",p,"fcst"));
-      const refs={};
-      ["plan",tgt].forEach(ver=>{ refs[ver]={}; rows.forEach(p=>{
-        if(p.ver!==ver) return;
-        const k=p.role_l2, s=p.role_l3; refs[ver][k]=refs[ver][k]||{}; refs[ver][k][s]=(refs[ver][k][s]||0)+(p.end_hc||0);
-      }); });
-      const fmt=(v)=>signed(Math.round(v),0);
-      let html="<thead><tr><th>Role Type L2 / Description L3</th><th>Beginning</th><th>Hires</th><th>Terms</th><th>Forecast</th><th>"+verLabel(tgt)+"</th><th>Δ vs "+verLabel(tgt)+"</th><th>Δ vs Plan</th></tr></thead><tbody>";
-      const total={beg:0,hires:0,terms:0,end:0}; let totalTgt=0,totalPlan=0;
-      Object.keys(agg).sort().forEach(l2=>{
-        let s={beg:0,hires:0,terms:0,end:0}, tgtEnd=0, planEnd=0;
-        Object.keys(agg[l2]).sort().forEach(l3=>{ const a=agg[l2][l3]; Object.keys(s).forEach(k=>s[k]+=a[k]); tgtEnd+=refs[tgt]?.[l2]?.[l3]||0; planEnd+=refs.plan?.[l2]?.[l3]||0; });
-        Object.keys(total).forEach(k=>total[k]+=s[k]); totalTgt+=tgtEnd; totalPlan+=planEnd;
-        html+=`<tr class="subtot"><td>▾ ${esc(l2)}</td><td class="num">${fmt(s.beg)}</td><td class="num">${fmt(s.hires)}</td><td class="num">${fmt(-Math.abs(s.terms))}</td><td class="num">${fmt(s.end)}</td><td class="num">${fmt(tgtEnd)}</td><td class="num">${pill(s.end-tgtEnd)}</td><td class="num">${pill(s.end-planEnd)}</td></tr>`;
-        Object.keys(agg[l2]).sort().forEach(l3=>{ const a=agg[l2][l3], te=refs[tgt]?.[l2]?.[l3]||0, pe=refs.plan?.[l2]?.[l3]||0;
-          html+=`<tr><td style="padding-left:24px">${esc(l3)}</td><td class="num">${fmt(a.beg)}</td><td class="num">${fmt(a.hires)}</td><td class="num">${fmt(-Math.abs(a.terms))}</td><td class="num">${fmt(a.end)}</td><td class="num">${fmt(te)}</td><td class="num">${pill(a.end-te)}</td><td class="num">${pill(a.end-pe)}</td></tr>`;
-        });
-      });
-      html+=`<tr class="total"><td>Total</td><td class="num">${fmt(total.beg)}</td><td class="num">${fmt(total.hires)}</td><td class="num">${fmt(-Math.abs(total.terms))}</td><td class="num">${fmt(total.end)}</td><td class="num">${fmt(totalTgt)}</td><td class="num">${pill(total.end-totalTgt)}</td><td class="num">${pill(total.end-totalPlan)}</td></tr></tbody>`;
-      $("#hcTbl").innerHTML=html;
-    }
     addInto(G2,s);
     gQrf+=sQrf; gQ3Qrf+=sQ3Qrf; gPlan+=sPlan;
     // "WW C&P" (and other l4pairs rollups) exist specifically to show L4-level
@@ -1596,6 +1554,49 @@ function renderHC(){
   });
 
   renderMonthlyHires();
+}
+
+function toggleHcWalkHierarchy(){
+  window.__hcWalkHierarchy=(window.__hcWalkHierarchy||"cch")==="cch"?"role":"cch";
+  renderHC();
+}
+function renderRoleHcWalk(q, cur, tgt){
+  const title=$("#hcWalkTitle");
+  if(title) title.textContent="👥 Headcount Walk by Role Type L2 / Role Type Description L3 — current quarter";
+  const rows=(D.planning||[]).filter(p=>p.qtr===q && inScope(null,p.l3,p.l4) && p.role_l2 && p.role_l3);
+  if(!rows.length){
+    $("#hcTbl").innerHTML='<tbody><tr><td class="note">Role Type data is not available in this snapshot. Use Refresh to load Role Type L2 / Role Type Description fields.</td></tr></tbody>';
+    return;
+  }
+  const agg={};
+  const add=(p,ver)=>{
+    if(p.ver!==ver) return;
+    const l2=p.role_l2, l3=p.role_l3;
+    (agg[l2]=agg[l2]||{}); (agg[l2][l3]=agg[l2][l3]||{beg:0,hires:0,terms:0,end:0});
+    const a=agg[l2][l3];
+    a.beg+=p.beg_hc||0; a.hires+=(p.hires||0)+(p.committed||0)+(p.open_reqs||0);
+    a.terms+=(p.terms||0)+(p.known_terms||0); a.end+=p.end_hc||0;
+  };
+  rows.forEach(p=>add(p,"fcst"));
+  const refs={};
+  ["plan",tgt].forEach(ver=>{ refs[ver]={}; rows.forEach(p=>{
+    if(p.ver!==ver) return;
+    const k=p.role_l2, s=p.role_l3; refs[ver][k]=refs[ver][k]||{}; refs[ver][k][s]=(refs[ver][k][s]||0)+(p.end_hc||0);
+  }); });
+  const fmt=(v)=>signed(Math.round(v),0);
+  let html="<thead><tr><th>Role Type L2 / Description L3</th><th>Beginning</th><th>Hires</th><th>Terms</th><th>Forecast</th><th>"+verLabel(tgt)+"</th><th>Δ vs "+verLabel(tgt)+"</th><th>Δ vs Plan</th></tr></thead><tbody>";
+  const total={beg:0,hires:0,terms:0,end:0}; let totalTgt=0,totalPlan=0;
+  Object.keys(agg).sort().forEach(l2=>{
+    let s={beg:0,hires:0,terms:0,end:0}, tgtEnd=0, planEnd=0;
+    Object.keys(agg[l2]).sort().forEach(l3=>{ const a=agg[l2][l3]; Object.keys(s).forEach(k=>s[k]+=a[k]); tgtEnd+=refs[tgt]?.[l2]?.[l3]||0; planEnd+=refs.plan?.[l2]?.[l3]||0; });
+    Object.keys(total).forEach(k=>total[k]+=s[k]); totalTgt+=tgtEnd; totalPlan+=planEnd;
+    html+=`<tr class="subtot"><td>▾ ${esc(l2)}</td><td class="num">${fmt(s.beg)}</td><td class="num">${fmt(s.hires)}</td><td class="num">${fmt(-Math.abs(s.terms))}</td><td class="num">${fmt(s.end)}</td><td class="num">${fmt(tgtEnd)}</td><td class="num">${pill(s.end-tgtEnd)}</td><td class="num">${pill(s.end-planEnd)}</td></tr>`;
+    Object.keys(agg[l2]).sort().forEach(l3=>{ const a=agg[l2][l3], te=refs[tgt]?.[l2]?.[l3]||0, pe=refs.plan?.[l2]?.[l3]||0;
+      html+=`<tr><td style="padding-left:24px">${esc(l3)}</td><td class="num">${fmt(a.beg)}</td><td class="num">${fmt(a.hires)}</td><td class="num">${fmt(-Math.abs(a.terms))}</td><td class="num">${fmt(a.end)}</td><td class="num">${fmt(te)}</td><td class="num">${pill(a.end-te)}</td><td class="num">${pill(a.end-pe)}</td></tr>`;
+    });
+  });
+  html+=`<tr class="total"><td>Total</td><td class="num">${fmt(total.beg)}</td><td class="num">${fmt(total.hires)}</td><td class="num">${fmt(-Math.abs(total.terms))}</td><td class="num">${fmt(total.end)}</td><td class="num">${fmt(totalTgt)}</td><td class="num">${pill(total.end-totalTgt)}</td><td class="num">${pill(total.end-totalPlan)}</td></tr></tbody>`;
+  $("#hcTbl").innerHTML=html;
 }
 
 // ---- Monthly Hiring: true calendar-month split from each hire's own Req
