@@ -2145,7 +2145,7 @@ function hcQuarterFilters(){
   return new Set(Array.isArray(selected)?selected:all);
 }
 function hcQuarterOptions(){
-  const options=new Set((D.hcwalk&&D.hcwalk.quarters)||[]);
+  const options=new Set();
   (D.monthly_hires||[]).forEach(r=>{
     if(typeof r[2]==="string") options.add(`${fiscalYearOfMonth(r[2])}-Q${fiscalQOfMonth(r[2])}`);
   });
