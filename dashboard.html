@@ -471,6 +471,11 @@ footer{color:var(--muted);font-size:10px;text-align:center;padding:6px 0 4px}
 
   <!-- HC -->
   <section class="view" id="view-hc">
+    <div class="toolbar" style="margin-bottom:10px">
+      <label for="hcQuarterFilter" style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Quarter</label>
+      <select id="hcQuarterFilter" onchange="setHcQuarterFilter(this.value)" style="min-width:145px"></select>
+      <span class="note" style="margin:0">Filters Monthly Hiring and Trended HC Walk.</span>
+    </div>
     <div class="kpis" id="hcKpis"></div>
     <div class="card">
       <h3>👥 Headcount Walk by Org (L3 / L4) — current quarter</h3>
@@ -1657,7 +1662,9 @@ function openHcDriverDrillThrough(key, l3, l4, q){
 function renderMonthlyHires(){
   const tblEl=$("#hireTbl");
   if(!tblEl) return;
-  const rows=(D.monthly_hires||[]).filter(r=>inScope(null,r[0],r[1]) && typeof r[2]==="string");
+  const selectedQ=hcQuarterFilter();
+  const rows=(D.monthly_hires||[]).filter(r=>inScope(null,r[0],r[1]) && typeof r[2]==="string" &&
+    (!selectedQ || `${fiscalYearOfMonth(r[2])}-Q${fiscalQOfMonth(r[2])}`===selectedQ));
   const months=[...new Set(rows.map(r=>r[2]))].sort();
   if(!months.length){ tblEl.innerHTML=''; return; }
   const mLbl=m=>{ const [y,mo]=m.split("-"); const names=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -2075,7 +2082,8 @@ function renderHcWalk(){
       else if(l4f==="__all"){ if(l4!=="__all") return; } else{ if(l4!==l4f) return; }
     }
     agg[q]=agg[q]||{}; agg[q][f]=(agg[q][f]||0)+v; });
-  const Q=W.quarters, val=(q,f)=>(agg[q]||{})[f]||0;
+  const selectedQ=hcQuarterFilter();
+  const Q=W.quarters.filter(q=>!selectedQ || q===selectedQ), val=(q,f)=>(agg[q]||{})[f]||0;
   const ALLF=["hires","committed","open_reqs","pub","unpub","abf","iadj","imo","tin","tout",
               "terms","known","attr","mgmt_hedge","mgmt_tin","mgmt_tout","fcst_adj"];
   // Beginning and Ending Headcount are both pinned to the same D.planning-
@@ -2132,6 +2140,30 @@ function renderHcWalk(){
 }
 
 // ---- helpers ----
+function hcQuarterFilter(){ return window.__hcQuarterFilter||""; }
+function hcQuarterOptions(){
+  const options=new Set((D.hcwalk&&D.hcwalk.quarters)||[]);
+  (D.monthly_hires||[]).forEach(r=>{
+    if(typeof r[2]==="string") options.add(`${fiscalYearOfMonth(r[2])}-Q${fiscalQOfMonth(r[2])}`);
+  });
+  return [...options].sort();
+}
+function hcQuarterLabel(q){
+  const m=/^(\d{4})-Q(\d)$/.exec(q||"");
+  return m?`Q${m[2]} '${m[1].slice(-2)}`:q;
+}
+function renderHcQuarterFilter(){
+  const el=$("#hcQuarterFilter"); if(!el) return;
+  const selected=hcQuarterFilter();
+  el.innerHTML=`<option value="">All quarters</option>`+
+    hcQuarterOptions().map(q=>`<option value="${q}"${q===selected?" selected":""}>${hcQuarterLabel(q)}</option>`).join("");
+}
+function setHcQuarterFilter(value){
+  window.__hcQuarterFilter=value||"";
+  renderHcQuarterFilter();
+  renderMonthlyHires();
+  renderHcWalk();
+}
 function qShort(q){ const m=q.match(/Q(\d)/); return m?("Q"+m[1]):q; }
 function scopeName(){
   const base=curScope().label;
@@ -3229,7 +3261,7 @@ function renderScope(){
   $("#appTitle").textContent=title;
   document.title=title;
 }
-function renderAll(){ renderScope(); renderOpex(); renderHC(); renderAnalysis();
+function renderAll(){ renderScope(); renderHcQuarterFilter(); renderOpex(); renderHC(); renderAnalysis();
   $("#foot").innerHTML=`Data refreshed ${D.meta.generated_at} · source ${D.meta.source} · commentary stored in your browser + downloadable for refresh · Amounts in $M`;
   // Re-measure after every render, not just on resize -- the filter row's
   // dropdown options change per tab/scope and can nudge the header's height.
