@@ -557,6 +557,7 @@ def build_data() -> dict:
             continue
         plan_out.append({
             "l2": r.l2 or "(none)", "l3": r.l3 or "(none)", "l4": r.l4 or "(none)",
+            "role_l2": getattr(r, "role_l2", None) or "", "role_l3": getattr(r, "role_l3", None) or "",
             "qtr": r.qtr, "ver": vk,
             "hires": _i(r.hires), "terms": _i(r.terms),
             "known_terms": _i(r.known_terms), "open_reqs": _i(r.open_reqs),

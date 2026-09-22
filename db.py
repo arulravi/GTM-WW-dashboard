@@ -429,6 +429,7 @@ def hc_planning(fiscal_years: list[str]) -> pd.DataFrame:
     ver_sql, ver_params = _version_filter_sql()
     sql = f"""
         SELECT [CCH Lvl 2 Name] AS l2, [CCH Lvl 3 Name] AS l3, [CCH Lvl 4 Name] AS l4,
+               [Role Type L2] AS role_l2, [Role Type Description] AS role_l3,
                [Fiscal Qtr/Year] AS qtr, [Version] AS ver,
                SUM([Actual Hires]) AS hires, SUM([Actual Terms]) AS terms,
                SUM([Known Terms]) AS known_terms, SUM([Open Reqs]) AS open_reqs,
