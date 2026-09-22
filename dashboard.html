@@ -471,11 +471,6 @@ footer{color:var(--muted);font-size:10px;text-align:center;padding:6px 0 4px}
 
   <!-- HC -->
   <section class="view" id="view-hc">
-    <div class="toolbar" style="margin-bottom:10px;align-items:flex-start">
-      <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding-top:5px">Quarter columns</span>
-      <div id="hcQuarterFilter" style="display:flex;flex-wrap:wrap;gap:6px 12px;max-width:100%"></div>
-      <span class="note" style="margin:5px 0 0">Select the quarters to show in Monthly Hiring and Trended HC Walk.</span>
-    </div>
     <div class="kpis" id="hcKpis"></div>
     <div class="card">
       <h3>👥 Headcount Walk by Org (L3 / L4) — current quarter</h3>
@@ -483,6 +478,11 @@ footer{color:var(--muted);font-size:10px;text-align:center;padding:6px 0 4px}
     </div>
     <div class="card">
       <h3>📈 Monthly Hiring — FY26 <span style="text-transform:none;font-weight:400;color:var(--muted)">(actual hire date, by month, with quarterly totals)</span></h3>
+      <div class="toolbar" style="margin:10px 0;align-items:flex-start">
+        <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding-top:5px">Quarter columns</span>
+        <div id="hcQuarterFilter" style="display:flex;flex-wrap:wrap;gap:6px 12px;max-width:100%"></div>
+        <span class="note" style="margin:5px 0 0">Select the quarters to show in Monthly Hiring.</span>
+      </div>
       <div class="tblwrap scrollbox" style="max-height:340px;margin-top:10px"><table id="hireTbl"></table></div>
       <div class="note" style="margin-top:6px">Current fiscal month (in progress) will keep updating as more hires are recorded.</div>
     </div>
@@ -2082,8 +2082,7 @@ function renderHcWalk(){
       else if(l4f==="__all"){ if(l4!=="__all") return; } else{ if(l4!==l4f) return; }
     }
     agg[q]=agg[q]||{}; agg[q][f]=(agg[q][f]||0)+v; });
-  const selectedQ=hcQuarterFilters();
-  const Q=W.quarters.filter(q=>selectedQ.has(q)), val=(q,f)=>(agg[q]||{})[f]||0;
+  const Q=W.quarters, val=(q,f)=>(agg[q]||{})[f]||0;
   const ALLF=["hires","committed","open_reqs","pub","unpub","abf","iadj","imo","tin","tout",
               "terms","known","attr","mgmt_hedge","mgmt_tin","mgmt_tout","fcst_adj"];
   // Beginning and Ending Headcount are both pinned to the same D.planning-
