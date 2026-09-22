@@ -471,10 +471,10 @@ footer{color:var(--muted);font-size:10px;text-align:center;padding:6px 0 4px}
 
   <!-- HC -->
   <section class="view" id="view-hc">
-    <div class="toolbar" style="margin-bottom:10px">
-      <label for="hcQuarterFilter" style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Quarter</label>
-      <select id="hcQuarterFilter" onchange="setHcQuarterFilter(this.value)" style="min-width:145px"></select>
-      <span class="note" style="margin:0">Filters Monthly Hiring and Trended HC Walk.</span>
+    <div class="toolbar" style="margin-bottom:10px;align-items:flex-start">
+      <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding-top:5px">Quarter columns</span>
+      <div id="hcQuarterFilter" style="display:flex;flex-wrap:wrap;gap:6px 12px;max-width:100%"></div>
+      <span class="note" style="margin:5px 0 0">Select the quarters to show in Monthly Hiring and Trended HC Walk.</span>
     </div>
     <div class="kpis" id="hcKpis"></div>
     <div class="card">
@@ -1662,9 +1662,9 @@ function openHcDriverDrillThrough(key, l3, l4, q){
 function renderMonthlyHires(){
   const tblEl=$("#hireTbl");
   if(!tblEl) return;
-  const selectedQ=hcQuarterFilter();
+  const selectedQ=hcQuarterFilters();
   const rows=(D.monthly_hires||[]).filter(r=>inScope(null,r[0],r[1]) && typeof r[2]==="string" &&
-    (!selectedQ || `${fiscalYearOfMonth(r[2])}-Q${fiscalQOfMonth(r[2])}`===selectedQ));
+    selectedQ.has(`${fiscalYearOfMonth(r[2])}-Q${fiscalQOfMonth(r[2])}`));
   const months=[...new Set(rows.map(r=>r[2]))].sort();
   if(!months.length){ tblEl.innerHTML=''; return; }
   const mLbl=m=>{ const [y,mo]=m.split("-"); const names=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -2082,8 +2082,8 @@ function renderHcWalk(){
       else if(l4f==="__all"){ if(l4!=="__all") return; } else{ if(l4!==l4f) return; }
     }
     agg[q]=agg[q]||{}; agg[q][f]=(agg[q][f]||0)+v; });
-  const selectedQ=hcQuarterFilter();
-  const Q=W.quarters.filter(q=>!selectedQ || q===selectedQ), val=(q,f)=>(agg[q]||{})[f]||0;
+  const selectedQ=hcQuarterFilters();
+  const Q=W.quarters.filter(q=>selectedQ.has(q)), val=(q,f)=>(agg[q]||{})[f]||0;
   const ALLF=["hires","committed","open_reqs","pub","unpub","abf","iadj","imo","tin","tout",
               "terms","known","attr","mgmt_hedge","mgmt_tin","mgmt_tout","fcst_adj"];
   // Beginning and Ending Headcount are both pinned to the same D.planning-
@@ -2140,7 +2140,11 @@ function renderHcWalk(){
 }
 
 // ---- helpers ----
-function hcQuarterFilter(){ return window.__hcQuarterFilter||""; }
+function hcQuarterFilters(){
+  const all=hcQuarterOptions();
+  const selected=window.__hcQuarterFilters;
+  return new Set(Array.isArray(selected)?selected:all);
+}
 function hcQuarterOptions(){
   const options=new Set((D.hcwalk&&D.hcwalk.quarters)||[]);
   (D.monthly_hires||[]).forEach(r=>{
@@ -2154,12 +2158,26 @@ function hcQuarterLabel(q){
 }
 function renderHcQuarterFilter(){
   const el=$("#hcQuarterFilter"); if(!el) return;
-  const selected=hcQuarterFilter();
-  el.innerHTML=`<option value="">All quarters</option>`+
-    hcQuarterOptions().map(q=>`<option value="${q}"${q===selected?" selected":""}>${hcQuarterLabel(q)}</option>`).join("");
+  const options=hcQuarterOptions();
+  const selected=hcQuarterFilters();
+  el.innerHTML=`<span style="display:inline-flex;gap:8px;margin-right:4px">
+      <button class="btn" type="button" onclick="setAllHcQuarters(true)">Select all</button>
+      <button class="btn" type="button" onclick="setAllHcQuarters(false)">Clear all</button>
+    </span>`+
+    options.map(q=>`<label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;white-space:nowrap">
+      <input type="checkbox" value="${q}"${selected.has(q)?" checked":""} onchange="setHcQuarterChecked(this.value,this.checked)"> ${hcQuarterLabel(q)}
+    </label>`).join("");
 }
-function setHcQuarterFilter(value){
-  window.__hcQuarterFilter=value||"";
+function setHcQuarterChecked(value,checked){
+  const selected=hcQuarterFilters();
+  if(checked) selected.add(value); else selected.delete(value);
+  window.__hcQuarterFilters=[...selected];
+  renderHcQuarterFilter();
+  renderMonthlyHires();
+  renderHcWalk();
+}
+function setAllHcQuarters(checked){
+  window.__hcQuarterFilters=checked?hcQuarterOptions():[];
   renderHcQuarterFilter();
   renderMonthlyHires();
   renderHcWalk();
