@@ -1417,10 +1417,10 @@ function renderHC(){
   const addInto=(s,c)=>{ for(const k in s) s[k]+=c[k]; };
   // Ending is always the Forecast landing, regardless of the Current/vs
   // Target dropdown selections -- those only drive the comparison column.
-  // The second delta is a separate fixed Q3 QRF reference, independent of
-  // whatever the vs-Target dropdown is set to.
+  // Outlook pins the second delta to Q3 QRF; QRF mode keeps its existing
+  // prior-QRF comparison so the reference columns remain distinct.
   const oDetail=byOrgDetail(q), oQrf=byOrg(tgt), oPlan=byOrg("plan");
-  const q3QrfKey="qrf3", oQ3Qrf=byOrg(q3QrfKey);
+  const q3QrfKey=state.mode==="qrf"?"qrf2":"qrf3", oQ3Qrf=byOrg(q3QrfKey);
   // The Forecast ending itself is pinned to the SAME source (D.planning) as
   // the KPI card above and every comparison column here -- D.hcwalk's own
   // "endhc" is a separately-computed track (it reconciles to its drivers via
