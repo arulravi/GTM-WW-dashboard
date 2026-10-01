@@ -2777,7 +2777,13 @@ function hookComment(){
         const saveMsg=$("#savedMsg");
         if(saveMsg){ saveMsg.textContent="saving…"; saveMsg.style.color="var(--muted)"; saveMsg.style.opacity=1; }
         clearTimeout(__storyDebounce); __storyDebounce=setTimeout(renderStory,300);      // live autopopulate
-        clearTimeout(__saveDebounce); __saveDebounce=setTimeout(()=>saveCommentary(true),400); // quiet autosave
+        clearTimeout(__saveDebounce); __saveDebounce=setTimeout(()=>saveCommentary(true),100); // save as soon as typing pauses
+      });
+      t.addEventListener("blur", ()=>{
+        if(t.value!==t.dataset.loaded){
+          clearTimeout(__saveDebounce);
+          saveCommentary(true);
+        }
       });
     }
     t.style.height="auto"; t.style.height=t.scrollHeight+"px";
