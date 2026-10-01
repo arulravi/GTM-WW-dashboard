@@ -2676,6 +2676,7 @@ function renderStory(){
 }
 
 let __storyDebounce=null, __saveDebounce=null;
+let __commentarySaveChain=Promise.resolve(), __commentarySaveRevision=0;
 // Guarded with data-hooked so this is safe to call repeatedly (renderStory
 // calls it too, since its 300ms live-autopopulate timer rebuilds
 // #storyWalkTbl on its own, independent of the full renderOpex() cycle --
@@ -2767,8 +2768,16 @@ function hookComment(){
             other.value=t.value; other.style.height="auto"; other.style.height=other.scrollHeight+"px";
           }
         });
+        const draftStore=commentStore();
+        draftStore[scope]=draftStore[scope]||{};
+        if(t.value.trim()) draftStore[scope][t.dataset.ce]=t.value.trim();
+        else delete draftStore[scope][t.dataset.ce];
+        localStorage.setItem("opex_commentary", JSON.stringify(draftStore));
+        ++__commentarySaveRevision;
+        const saveMsg=$("#savedMsg");
+        if(saveMsg){ saveMsg.textContent="saving…"; saveMsg.style.color="var(--muted)"; saveMsg.style.opacity=1; }
         clearTimeout(__storyDebounce); __storyDebounce=setTimeout(renderStory,300);      // live autopopulate
-        clearTimeout(__saveDebounce); __saveDebounce=setTimeout(()=>saveCommentary(true),1500); // quiet autosave
+        clearTimeout(__saveDebounce); __saveDebounce=setTimeout(()=>saveCommentary(true),400); // quiet autosave
       });
     }
     t.style.height="auto"; t.style.height=t.scrollHeight+"px";
@@ -2781,6 +2790,8 @@ function hookComment(){
   });
 }
 function saveCommentary(quiet){
+  clearTimeout(__saveDebounce);
+  const revision=++__commentarySaveRevision;
   const all=commentStore(); const key=scopeKey(); all[key]=all[key]||{};
   // Build the POST payload from the on-screen boxes. Cleared boxes are sent as
   // "" so the SERVER deletes that field (a field-level merge can't otherwise
@@ -2819,32 +2830,45 @@ function saveCommentary(quiet){
     // delete. The server merges at the field level and hands back the full
     // AUTHORITATIVE file, which we adopt wholesale -- so deletions (and
     // colleagues' edits) both reflect correctly, not just additions.
-    fetch("/api/commentary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
+    m.textContent="saving…"; m.style.color="var(--muted)"; m.style.opacity=1;
+    const send=()=>fetch("/api/commentary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
       .then(r=>r.json().catch(()=>({ok:false,error:`HTTP ${r.status}`})).then(j=>({r,j})))
       .then(({r,j})=>{
-        if(!r.ok || !j.ok || !j.commentary){ showFail(j&&j.error||`HTTP ${r.status}`); return; }
+        if(!r.ok || !j.ok || !j.commentary){
+          if(revision===__commentarySaveRevision) showFail(j&&j.error||`HTTP ${r.status}`);
+          return;
+        }
         D.commentary=j.commentary;                                   // server file is source of truth
-        const ls=commentStore(); delete ls[key];                     // saved scope now lives on the server, drop the local override
-        (payload===undefined?[]:Object.keys(payload)).forEach(k=>{ if(k!==key) delete ls[k]; });
-        localStorage.setItem("opex_commentary", JSON.stringify(ls));
-        showOk();
+        if(revision===__commentarySaveRevision){
+          const ls=commentStore(); delete ls[key];                   // saved scope now lives on the server, drop the local override
+          Object.keys(payload).forEach(k=>{ if(k!==key) delete ls[k]; });
+          localStorage.setItem("opex_commentary", JSON.stringify(ls));
+          showOk();
+        }
         // Backstop: the server itself refuses to delete a protected field
         // (see server.py's Add Commentary Deletion Approval Control), so if
         // the client-side guard somehow didn't catch this -- e.g. a stale tab
         // left open from before this feature shipped -- `blocked` lists which
         // fields it refused. Re-render so those boxes snap back to showing
         // their real (never actually deleted) text instead of sitting empty.
-        if(j.blocked && j.blocked.length){
+        if(revision===__commentarySaveRevision && j.blocked && j.blocked.length){
           alert("Some commentary couldn't be deleted directly because it's protected -- use the ✕ on the box again to file a deletion request instead.");
           renderAll();
         }
       })
-      .catch(e=>showFail(e&&e.message||"network error"));
+      .catch(e=>{ if(revision===__commentarySaveRevision) showFail(e&&e.message||"network error"); });
+    // Keep writes in order. If a user types again while a request is still
+    // being written, the newer value must reach disk last and must not be
+    // cleared from the local safety copy by an older response.
+    __commentarySaveChain=__commentarySaveChain.catch(()=>{}).then(send);
   }else if(!quiet){
     // offline, explicit click: download commentary.json for refresh.py to merge
     const blob=new Blob([JSON.stringify(all,null,2)],{type:"application/json"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="commentary.json"; a.click();
     showOk();
+  }else{
+    m.textContent="saved locally ✓"; m.style.color=""; m.style.opacity=1;
+    setTimeout(()=>m.style.opacity=0,1800);
   }
   // offline + quiet autosave: localStorage already has it, nothing further to do
 }
