@@ -42,9 +42,55 @@ HERE = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
         else os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PORT = 8770
 SNAPSHOT_DIR = os.path.join(HERE, "snapshots")
-COMMENTARY_PATH = os.path.join(HERE, "commentary.json")
-COMMENTARY_META_PATH = os.path.join(HERE, "commentary_meta.json")
-DELETION_REQUESTS_PATH = os.path.join(HERE, "deletion_requests.json")
+
+# The app code can be launched from a GitHub checkout, but editable data must
+# continue to live in the team's existing SharePoint library synced by OneDrive.
+# Never silently create a private commentary.json beside a GitHub clone.
+_SHARED_APP_RELATIVE_PATH = os.path.join(
+    "Expenses", "FY26", "Claude Project", "GTM WW dashboard"
+)
+
+
+def _resolve_shared_app_dir() -> str:
+    configured = os.environ.get("GTM_WW_SHARED_APP_DIR")
+    if configured:
+        path = os.path.abspath(os.path.expandvars(os.path.expanduser(configured)))
+        if not os.path.isdir(path):
+            raise RuntimeError(
+                f"GTM_WW_SHARED_APP_DIR does not exist: {path}. "
+                "Set it to the locally synced GTM WW dashboard SharePoint folder."
+            )
+        return path
+
+    roots = [
+        os.environ.get("OneDriveCommercial"),
+        os.environ.get("OneDrive"),
+        os.path.join(os.path.expanduser("~"), "OneDrive - Adobe"),
+    ]
+    seen = set()
+    for root in roots:
+        if not root:
+            continue
+        root = os.path.abspath(os.path.expandvars(os.path.expanduser(root)))
+        if root in seen:
+            continue
+        seen.add(root)
+        candidate = os.path.join(root, _SHARED_APP_RELATIVE_PATH)
+        if os.path.isdir(candidate):
+            return candidate
+
+    raise RuntimeError(
+        "The shared GTM WW dashboard SharePoint folder was not found. "
+        "Sync it with OneDrive, or set GTM_WW_SHARED_APP_DIR to its local path. "
+        "Commentary is not saved beside a GitHub checkout because that would "
+        "create a private copy that other users cannot see."
+    )
+
+
+SHARED_APP_DIR = _resolve_shared_app_dir()
+COMMENTARY_PATH = os.path.join(SHARED_APP_DIR, "commentary.json")
+COMMENTARY_META_PATH = os.path.join(SHARED_APP_DIR, "commentary_meta.json")
+DELETION_REQUESTS_PATH = os.path.join(SHARED_APP_DIR, "deletion_requests.json")
 PROTECT_AFTER_DAYS = 10
 
 # ThreadingHTTPServer runs each request in its own thread; with multiple
@@ -383,6 +429,7 @@ def open_app_window(url):
 
 
 def main():
+    print(f"[server] shared commentary source: {COMMENTARY_PATH}", flush=True)
     # ensure data.js exists on first run
     if not os.path.isfile(os.path.join(HERE, "data.js")):
         print("[server] no data.js yet — pulling initial data from SQL…")

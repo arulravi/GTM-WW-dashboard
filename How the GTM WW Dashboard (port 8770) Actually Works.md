@@ -16,24 +16,24 @@ Every laptop connects directly to Adobe's central Finance SQL Server
 database that everyone reads from. This part works exactly the way people assume a
 "shared app" should work.
 
-**2. The commentary (the notes people type in) — NOT live-shared**
-- The app's files (the program itself, plus two small data files: `data.js` and
-  `commentary.json`) sit inside a **OneDrive-synced folder**, not a real network drive.
-  OneDrive gives every laptop its **own local copy** of these files and syncs changes
-  in the background — the same way a Word doc syncs, not the same way a shared database
-  works.
-- Each person has to run **their own separate copy** of the small local program
-  (`server.py`) on their own laptop. It only listens on that laptop (`127.0.0.1` /
-  "localhost") — no other laptop can ever connect to it over the network. There is no
-  single running server that everyone's browser talks to.
-- When someone types a note, it saves to their own local copy of `commentary.json`.
-  OneDrive then uploads it and, after some delay, pushes it down to everyone else's
-  laptop. The app checks for updates every ~45 seconds.
+**2. The commentary (the notes people type in) — shared through OneDrive sync**
+- The application code may now be checked out from GitHub, but the shared data
+  file remains `commentary.json` in the SharePoint folder synced by OneDrive.
+- `server.py` resolves that shared folder from the user's OneDrive location (or
+  `GTM_WW_SHARED_APP_DIR`) and reads/writes `commentary.json`,
+  `commentary_meta.json`, and deletion requests there, independently of where
+  the GitHub checkout lives. It refuses to silently create a private copy next
+  to the GitHub checkout.
+- Each person runs a local copy of `server.py` on their laptop. Commentary
+  changes are written to that laptop's synced copy of the shared file; OneDrive
+  propagates the updates to other users. The browser pulls the latest shared
+  commentary on startup, on focus, and periodically while open.
+- L3-page scope keys are kept separate within `commentary.json`, so saving one
+  L3 updates that L3's fields without replacing other L3 entries.
 
 ## What this means in practice
 
-- **One person editing at a time works fine.** Notes eventually show up for everyone
-  once OneDrive finishes syncing.
+- Notes eventually show up for everyone once OneDrive finishes syncing.
 - **Two people editing the *same* note at close to the same moment is risky.** OneDrive
   can create a "conflicted copy" of the file, or one person's edit can silently overwrite
   the other's, because there's no real coordination between the two local copies.

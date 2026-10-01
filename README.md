@@ -35,6 +35,24 @@ Prefer a browser tab / bookmark instead of the native window?
 The link works while the web server is running. To have it always available,
 run `Start Web App.bat` at login (or ask to enable auto-start).
 
+### Shared commentary when running from a GitHub checkout
+
+The application code may live in a GitHub clone, but commentary remains in the
+existing SharePoint folder synced by OneDrive. `server.py` resolves
+`<OneDriveCommercial>\Expenses\FY26\Claude Project\GTM WW dashboard` and reads
+and writes its `commentary.json`, `commentary_meta.json`, and deletion requests.
+All L3 pages keep separate scope keys in the shared commentary file.
+
+The migration issue was that the old server stored `commentary.json` beside
+`server.py`. When the code was launched from a GitHub checkout, that made a
+private commentary file in the checkout instead of using the SharePoint-synced
+copy.
+
+If the synced folder is in a different local location, set
+`GTM_WW_SHARED_APP_DIR` to that folder before starting the server. The server
+fails clearly when it cannot find the shared folder rather than silently saving
+commentary to a private GitHub checkout.
+
 ## The executive dashboard — `dashboard.html`
 A polished, single-page executive view (the leadership-ready one).
 
