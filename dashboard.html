@@ -2677,6 +2677,8 @@ function renderStory(){
 
 let __storyDebounce=null, __saveDebounce=null;
 let __commentarySaveChain=Promise.resolve(), __commentarySaveRevision=0;
+let __pendingCommentaryChanges={}, __pendingCommentaryExpected={};
+let __pendingCommentaryLegacyClears={}, __commentaryNextExpected={};
 // Guarded with data-hooked so this is safe to call repeatedly (renderStory
 // calls it too, since its 300ms live-autopopulate timer rebuilds
 // #storyWalkTbl on its own, independent of the full renderOpex() cycle --
@@ -2730,12 +2732,16 @@ function removeNoteCard(cardId, fk){
   // Add Commentary Deletion Approval Control: a protected note can't be
   // cleared directly -- offer to file a request instead and leave it as-is.
   if(guardProtectedDelete(key, fk, !!current.trim())) return;
+  queueCommentaryChange(key, fk, "");
   if(ta) ta.value="";
   // Clear the in-memory server baseline (D.commentary) too, not just the
   // local autosave store -- loadComment() merges baseline + local overrides,
   // and a local delete alone doesn't erase a baseline key it no longer
   // overrides, so the old value would otherwise silently reappear.
   if(D.commentary[key]) delete D.commentary[key][fk];
+  const drafts=commentStore();
+  if(drafts[key]) delete drafts[key][fk];
+  localStorage.setItem("opex_commentary", JSON.stringify(drafts));
   clearTimeout(__saveDebounce);
   saveCommentary(true); // save immediately -- Remove is a deliberate action, not worth a 1.5s debounce risk
   delete __notesForceOpen[fk];
@@ -2773,6 +2779,7 @@ function hookComment(){
         if(t.value.trim()) draftStore[scope][t.dataset.ce]=t.value.trim();
         else delete draftStore[scope][t.dataset.ce];
         localStorage.setItem("opex_commentary", JSON.stringify(draftStore));
+        queueCommentaryChange(scope, t.dataset.ce, t.value.trim());
         ++__commentarySaveRevision;
         const saveMsg=$("#savedMsg");
         if(saveMsg){ saveMsg.textContent="saving…"; saveMsg.style.color="var(--muted)"; saveMsg.style.opacity=1; }
@@ -2795,34 +2802,111 @@ function hookComment(){
     t.title=pending?`Pending deletion approval -- requested by ${pending.requested_by} on ${new Date(pending.requested_at).toLocaleString()}`:"";
   });
 }
+function queueCommentaryChange(scope, field, value){
+  __pendingCommentaryChanges[scope]=__pendingCommentaryChanges[scope]||{};
+  __pendingCommentaryExpected[scope]=__pendingCommentaryExpected[scope]||{};
+  if(!(field in __pendingCommentaryExpected[scope])){
+    __pendingCommentaryExpected[scope][field]=expectedCommentaryValue(scope,field);
+  }
+  __pendingCommentaryChanges[scope][field]=value;
+  if(state.l4!=="__all"){
+    const legacyKeys=scopeTabsContainingL4(state.l4)
+      .map(t=>[t.key,state.l4,state.q].join("|"))
+      .filter(k=>k!==scope);
+    const byScope=__pendingCommentaryLegacyClears[scope]||{};
+    const drafts=commentStore();
+    legacyKeys.forEach(k=>{
+      byScope[k]=byScope[k]||{};
+      byScope[k][field]="";
+      __pendingCommentaryExpected[k]=__pendingCommentaryExpected[k]||{};
+      if(!(field in __pendingCommentaryExpected[k])){
+        __pendingCommentaryExpected[k][field]=expectedCommentaryValue(k,field);
+      }
+      if(drafts[k]){
+        delete drafts[k][field];
+        if(!Object.keys(drafts[k]).length) delete drafts[k];
+      }
+    });
+    __pendingCommentaryLegacyClears[scope]=byScope;
+    localStorage.setItem("opex_commentary", JSON.stringify(drafts));
+  }
+}
+function expectedCommentaryValue(scope, field){
+  const overlay=__commentaryNextExpected[scope];
+  if(overlay && Object.prototype.hasOwnProperty.call(overlay,field)) return overlay[field];
+  const fields=(D.commentary||{})[scope];
+  return fields && Object.prototype.hasOwnProperty.call(fields,field) ? fields[field] : null;
+}
+function takePendingCommentaryChanges(){
+  const fields=__pendingCommentaryChanges;
+  const expected=__pendingCommentaryExpected;
+  const legacy=__pendingCommentaryLegacyClears;
+  __pendingCommentaryChanges={};
+  __pendingCommentaryExpected={};
+  __pendingCommentaryLegacyClears={};
+  const payload={};
+  Object.keys(fields).forEach(scope=>{
+    if(Object.keys(fields[scope]).length) payload[scope]=fields[scope];
+  });
+  Object.keys(legacy).forEach(scope=>{
+    Object.entries(legacy[scope]).forEach(([legacyKey,clears])=>{
+      if(!payload[legacyKey]) payload[legacyKey]={};
+      Object.assign(payload[legacyKey],clears);
+    });
+  });
+  Object.entries(payload).forEach(([scope,changed])=>{
+    __commentaryNextExpected[scope]=__commentaryNextExpected[scope]||{};
+    Object.entries(changed).forEach(([field,value])=>{
+      __commentaryNextExpected[scope][field]=value==="" ? null : value;
+    });
+  });
+  return {payload, expected, fields, legacy};
+}
+function restorePendingCommentaryChanges(batch){
+  Object.entries(batch.fields).forEach(([scope,fields])=>{
+    __pendingCommentaryChanges[scope]=__pendingCommentaryChanges[scope]||{};
+    Object.entries(fields).forEach(([field,value])=>{
+      if(!(field in __pendingCommentaryChanges[scope])){
+        __pendingCommentaryChanges[scope][field]=value;
+      }
+    });
+  });
+  Object.entries(batch.expected).forEach(([scope,fields])=>{
+    __pendingCommentaryExpected[scope]=__pendingCommentaryExpected[scope]||{};
+    Object.entries(fields).forEach(([field,value])=>{
+      if(!(field in __pendingCommentaryExpected[scope])){
+        __pendingCommentaryExpected[scope][field]=value;
+      }
+    });
+  });
+  Object.entries(batch.legacy).forEach(([scope,keys])=>{
+    const target=__pendingCommentaryLegacyClears[scope]||{};
+    Object.entries(keys).forEach(([legacyKey,fields])=>{
+      target[legacyKey]=target[legacyKey]||{};
+      Object.entries(fields).forEach(([field,value])=>{
+        if(!(field in target[legacyKey])) target[legacyKey][field]=value;
+      });
+    });
+    __pendingCommentaryLegacyClears[scope]=target;
+  });
+}
+function clearSavedLocalCommentaryChanges(payload){
+  const drafts=commentStore();
+  Object.entries(payload).forEach(([scope,fields])=>{
+    if(!drafts[scope]) return;
+    Object.entries(fields).forEach(([field,value])=>{
+      if(drafts[scope][field]===value) delete drafts[scope][field];
+    });
+    if(!Object.keys(drafts[scope]).length) delete drafts[scope];
+  });
+  localStorage.setItem("opex_commentary", JSON.stringify(drafts));
+}
 function saveCommentary(quiet){
   clearTimeout(__saveDebounce);
   const revision=++__commentarySaveRevision;
-  const all=commentStore(); const key=scopeKey(); all[key]=all[key]||{};
-  // Build the POST payload from the on-screen boxes. Cleared boxes are sent as
-  // "" so the SERVER deletes that field (a field-level merge can't otherwise
-  // remove anything -- that's why cleared notes kept reappearing). Non-empty
-  // values are added/updated. localStorage mirrors this (drops empties).
-  const payloadFields={};
-  document.querySelectorAll(".cmt").forEach(t=>{ const v=t.value.trim();
-    payloadFields[t.dataset.ce]=v;                                  // "" = delete
-    if(v) all[key][t.dataset.ce]=v; else delete all[key][t.dataset.ce];
-  });
-  const payload={[key]:payloadFields};
-  // Drill-L4: the same note is surfaced from legacy per-tab keys (see
-  // loadComment's migration fallback). Clear those legacy copies for the
-  // fields we're now saving under the unified L4 key, so a delete actually
-  // sticks instead of the legacy value re-filling it on the next load.
-  if(state.l4!=="__all"){
-    scopeTabsContainingL4(state.l4).forEach(t=>{
-      const legacyKey=[t.key,state.l4,state.q].join("|");
-      if(legacyKey===key) return;
-      const clear={}; for(const ce in payloadFields) clear[ce]="";
-      payload[legacyKey]=clear;
-      if(all[legacyKey]) for(const ce in payloadFields) delete all[legacyKey][ce];
-    });
-  }
-  localStorage.setItem("opex_commentary", JSON.stringify(all)); // instant local safety net regardless of server result
+  const batch=takePendingCommentaryChanges();
+  const payload=batch.payload;
+  if(!Object.keys(payload).length) return;
   const m=$("#savedMsg");
   const showOk=()=>{ m.textContent=quiet?"auto-saved ✓":"saved ✓"; m.style.color=""; m.style.opacity=1; setTimeout(()=>m.style.opacity=0,1800); };
   // Only ever shown on a REAL failure, never silently swallowed -- with more
@@ -2832,24 +2916,43 @@ function saveCommentary(quiet){
   const showFail=(why)=>{ m.textContent="⚠ not saved — "+(why||"retry"); m.style.color="var(--bad)"; m.style.opacity=1;
     console.error("saveCommentary failed:", why); };
   if(location.protocol.startsWith("http")){
-    // Send this scope's fields (+ legacy-key clears for L4) with "" meaning
-    // delete. The server merges at the field level and hands back the full
-    // AUTHORITATIVE file, which we adopt wholesale -- so deletions (and
-    // colleagues' edits) both reflect correctly, not just additions.
+    // POST only dirty cells with their last-seen values. The server rejects
+    // stale edits to a cell while merging unrelated cell updates.
     m.textContent="saving…"; m.style.color="var(--muted)"; m.style.opacity=1;
-    const send=()=>fetch("/api/commentary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
+    const send=()=>fetch("/api/commentary",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({changes:payload,expected:batch.expected})})
       .then(r=>r.json().catch(()=>({ok:false,error:`HTTP ${r.status}`})).then(j=>({r,j})))
       .then(({r,j})=>{
         if(!r.ok || !j.ok || !j.commentary){
+          restorePendingCommentaryChanges(batch);
           if(revision===__commentarySaveRevision) showFail(j&&j.error||`HTTP ${r.status}`);
           return;
         }
         D.commentary=j.commentary;                                   // server file is source of truth
+        const applied=j.applied||{};
+        clearSavedLocalCommentaryChanges(applied);
+        Object.entries(applied).forEach(([scope,fields])=>{
+          __commentaryNextExpected[scope]=__commentaryNextExpected[scope]||{};
+          Object.keys(fields).forEach(field=>{
+            const current=(D.commentary[scope]||{})[field];
+            __commentaryNextExpected[scope][field]=current===undefined?null:current;
+          });
+        });
+        const conflicts=j.conflicts||[];
+        conflicts.forEach(({scope,field,current})=>{
+          __commentaryNextExpected[scope]=__commentaryNextExpected[scope]||{};
+          __commentaryNextExpected[scope][field]=current===undefined?null:current;
+        });
+        (j.blocked||[]).forEach(({scope,field})=>{
+          __commentaryNextExpected[scope]=__commentaryNextExpected[scope]||{};
+          const current=(D.commentary[scope]||{})[field];
+          __commentaryNextExpected[scope][field]=current===undefined?null:current;
+        });
         if(revision===__commentarySaveRevision){
-          const ls=commentStore(); delete ls[key];                   // saved scope now lives on the server, drop the local override
-          Object.keys(payload).forEach(k=>{ if(k!==key) delete ls[k]; });
-          localStorage.setItem("opex_commentary", JSON.stringify(ls));
-          showOk();
+          if(conflicts.length){
+            showFail("conflict — latest shared value loaded; edit again to reapply");
+          }else{
+            showOk();
+          }
         }
         // Backstop: the server itself refuses to delete a protected field
         // (see server.py's Add Commentary Deletion Approval Control), so if
@@ -2862,14 +2965,17 @@ function saveCommentary(quiet){
           renderAll();
         }
       })
-      .catch(e=>{ if(revision===__commentarySaveRevision) showFail(e&&e.message||"network error"); });
+      .catch(e=>{
+        restorePendingCommentaryChanges(batch);
+        if(revision===__commentarySaveRevision) showFail(e&&e.message||"network error");
+      });
     // Keep writes in order. If a user types again while a request is still
     // being written, the newer value must reach disk last and must not be
     // cleared from the local safety copy by an older response.
     __commentarySaveChain=__commentarySaveChain.catch(()=>{}).then(send);
   }else if(!quiet){
-    // offline, explicit click: download commentary.json for refresh.py to merge
-    const blob=new Blob([JSON.stringify(all,null,2)],{type:"application/json"});
+    // Offline explicit saves export only the changed cells for later merging.
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="commentary.json"; a.click();
     showOk();
   }else{

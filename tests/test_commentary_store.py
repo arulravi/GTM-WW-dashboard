@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 
-from commentary_store import append_update, materialize_shared_data, read_shared_data
+from commentary_store import (
+    append_update,
+    find_conflicts,
+    materialize_shared_data,
+    read_shared_data,
+)
 
 
 class CommentaryStoreTests(unittest.TestCase):
@@ -94,12 +99,93 @@ class CommentaryStoreTests(unittest.TestCase):
     def test_materialize_writes_merged_commentary(self):
         append_update(
             self.shared_dir,
-            {"l3:Sales Ops L3|__all|2026-Q4": {"Comp & Benefits": "Saved note"}},
+            {
+                "l3:Global Ecosystem L3|__all|2026-Q4": {
+                    "Comp & Benefits": "Eco note",
+                    "Outside Labor": "Unrelated existing cell",
+                },
+                "l3:Americas CXO L3|__all|2026-Q4": {
+                    "Outside Labor": "Americas note",
+                },
+            },
+        )
+        # A single-cell save is a patch, not a scope/file replacement.
+        append_update(
+            self.shared_dir,
+            {"l3:Global Ecosystem L3|__all|2026-Q4": {"Comp & Benefits": "Updated Eco note"}},
         )
         commentary, _ = materialize_shared_data(self.shared_dir)
         stored = json.loads(self.commentary_path.read_text(encoding="utf-8"))
         self.assertEqual(stored, commentary)
-        self.assertEqual(stored["l3:Sales Ops L3|__all|2026-Q4"]["Comp & Benefits"], "Saved note")
+        self.assertEqual(
+            stored["l3:Global Ecosystem L3|__all|2026-Q4"],
+            {"Comp & Benefits": "Updated Eco note", "Outside Labor": "Unrelated existing cell"},
+        )
+        self.assertEqual(
+            stored["l3:Americas CXO L3|__all|2026-Q4"],
+            {"Outside Labor": "Americas note"},
+        )
+
+    def test_blank_for_absent_cell_is_noop(self):
+        scope = "l3:Global Ecosystem L3|__all|2026-Q4"
+        append_update(self.shared_dir, {scope: {"Comp & Benefits": "Newest note"}})
+        append_update(self.shared_dir, {scope: {"Additional Notes": ""}})
+
+        commentary, _ = read_shared_data(self.shared_dir)
+        self.assertEqual(commentary[scope]["Comp & Benefits"], "Newest note")
+        self.assertNotIn("Additional Notes", commentary[scope])
+
+    def test_stale_same_cell_edit_is_rejected_but_distinct_cell_is_safe(self):
+        scope = "l3:Global Ecosystem L3|__all|2026-Q4"
+        commentary = {scope: {"Comp & Benefits": "Latest shared value"}}
+        changes = {
+            scope: {
+                "Comp & Benefits": "Stale user's value",
+                "Outside Labor": "Different cell value",
+            }
+        }
+        expected = {scope: {"Comp & Benefits": "Old value", "Outside Labor": None}}
+
+        conflicts = find_conflicts(commentary, changes, expected)
+        self.assertEqual(
+            conflicts,
+            [{"scope": scope, "field": "Comp & Benefits", "current": "Latest shared value"}],
+        )
+        self.assertEqual(commentary, {scope: {"Comp & Benefits": "Latest shared value"}})
+
+    def test_concurrent_same_cell_updates_have_deterministic_first_event_wins(self):
+        scope = "l3:Global Ecosystem L3|__all|2026-Q4"
+        append_update(self.shared_dir, {scope: {"Comp & Benefits": "Original"}}, kind="baseline")
+        append_update(
+            self.shared_dir,
+            {scope: {"Comp & Benefits": "First writer"}},
+            expected_changes={scope: {"Comp & Benefits": "Original"}},
+        )
+        append_update(
+            self.shared_dir,
+            {scope: {"Comp & Benefits": "Second writer"}},
+            expected_changes={scope: {"Comp & Benefits": "Original"}},
+        )
+        update_files = []
+        for path in (self.shared_dir / "commentary_updates").glob("*.json"):
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            if entry["kind"] == "update":
+                value = entry["changes"][scope]["Comp & Benefits"]
+                update_files.append(("a" if value == "First writer" else "b", path, entry))
+        for event_id, path, entry in update_files:
+            entry["created_at"] = "2026-10-01T00:00:00+00:00"
+            entry["event_id"] = event_id
+            path.unlink()
+            (path.parent / f"{event_id}.json").write_text(
+                json.dumps(entry), encoding="utf-8"
+            )
+        self.commentary_path.write_text(
+            json.dumps({scope: {"Comp & Benefits": "Stale materialized value"}}),
+            encoding="utf-8",
+        )
+
+        commentary, _ = read_shared_data(self.shared_dir)
+        self.assertEqual(commentary[scope]["Comp & Benefits"], "First writer")
 
     def test_invalid_canonical_file_fails_closed(self):
         self.commentary_path.write_text("{", encoding="utf-8")

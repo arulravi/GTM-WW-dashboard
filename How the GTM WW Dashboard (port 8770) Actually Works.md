@@ -22,27 +22,27 @@ database that everyone reads from. This part works exactly the way people assume
 - `server.py` resolves that shared folder from the user's OneDrive location (or
   `GTM_WW_SHARED_APP_DIR`) independently of the GitHub checkout. It refuses to
   silently create a private copy next to the code.
-- Each person runs a local copy of `server.py` on their laptop. Saves now first
-  create unique, append-only records in `commentary_updates`; `commentary.json`
-  is the merged, readable view. Distinct users' and L3s' updates therefore do
-  not depend on a process-local lock or a whole-file write winning OneDrive's
-  sync race.
-- Refresh, restart, and API reads merge the journal with the current JSON view.
-  A saved update remains recoverable if OneDrive later syncs an older
-  `commentary.json` over a newer one. The client pulls shared commentary on
-  startup, on focus, and periodically while open.
+- Each person runs a local copy of `server.py` on their laptop. A save records
+  only the edited commentary cells, with the value each editor last saw, as a
+  unique append-only record in `commentary_updates`; `commentary.json` is the
+  merged, readable view. Updating one cell cannot replace other cells in that
+  L3 or another L3.
+- Refresh, restart, and API reads rebuild the view from the recovered baseline
+  and journal. Stale edits to cells that have changed are rejected; if two
+  laptops submit a same-cell edit before syncing, replay applies the first
+  journal event by UTC timestamp, then event ID. The other edit must be
+  explicitly re-applied after seeing the winner.
 - OneDrive synchronization is still eventually consistent, so another laptop
-  sees an update after sync completes. Same-field edits made simultaneously
-  resolve by the journal's timestamp order; the individual update records remain
-  available even if their materialized JSON view conflicts.
+  sees updates after sync completes. The browser pulls shared commentary on
+  startup, on focus, and periodically while open.
 
 ## What this means in practice
 
 - Notes eventually show up for everyone once OneDrive finishes syncing, provided
   each user is running the journal-aware server version.
 - **The JSON view can still produce OneDrive conflict copies**, but unique
-  journal records preserve updates and are merged back into the view on the next
-  read/save. This protects different-L3 work without claiming OneDrive is a
+  journal records preserve and merge separate cell edits back into the view.
+  This protects unrelated commentary cells without claiming OneDrive is a
   real-time transactional database.
 - **The app is not "always on."** If nobody's laptop has the local program running, the
   editable/commentary part of the app isn't reachable — although the OneDrive-synced

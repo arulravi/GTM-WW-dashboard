@@ -42,10 +42,12 @@ existing SharePoint folder synced by OneDrive. `server.py` resolves
 `<OneDriveCommercial>\Expenses\FY26\Claude Project\GTM WW dashboard`. The
 materialized `commentary.json` is accompanied by an append-only
 `commentary_updates` folder. Each save is written as a uniquely named update
-before the JSON view is refreshed, so two laptops syncing at once cannot erase
-each other's different L3 updates by replacing the same whole file. Refreshes
-and restarts read the merged view; malformed or missing shared data is an error,
-not an invitation to initialize an empty file.
+containing only changed commentary cells before the JSON view is refreshed.
+Unchanged cells are omitted, so saving one cell cannot blank another cell in
+the same L3 or any other L3. Two laptops syncing at once cannot erase each
+other's updates by replacing the same whole file. Refreshes and restarts read
+the merged view; malformed or missing shared data is an error, not an
+invitation to initialize an empty file.
 
 The migration issue was that the old server stored `commentary.json` beside
 `server.py`. When the code was launched from a GitHub checkout, that made a
@@ -60,6 +62,15 @@ commentary to a private GitHub checkout.
 All users need to run the updated server code for journal-backed saves. Updates
 still appear to other users after OneDrive has synchronized the shared folder;
 OneDrive synchronization itself is not instantaneous.
+Each edited cell includes the value the editor last saw. If another save has
+changed that same cell, the stale edit is rejected and the latest server value
+is returned; unrelated cells in the same save are still applied. The user can
+review the latest note and explicitly re-edit to replace it. Pages using the
+older whole-table save format are rejected and must be reloaded. If two
+different laptops submit edits to the same cell before OneDrive syncs either
+one, the journal is replayed deterministically: the first event by UTC
+timestamp (then event ID) wins; the other edit is not applied. The user can
+re-edit after the winning value syncs.
 
 ## The executive dashboard — `dashboard.html`
 A polished, single-page executive view (the leadership-ready one).

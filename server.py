@@ -39,6 +39,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import refresh
 from commentary_store import (
     append_update,
+    find_conflicts,
     materialize_shared_data,
     read_shared_data,
     resolve_shared_app_dir,
@@ -148,15 +149,29 @@ class Handler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(e)}, 500)
         elif self.path == "/api/commentary":
             try:
-                payload = json.loads(self._read_body() or b"{}")
-                if not isinstance(payload, dict):
-                    raise ValueError("Commentary payload must be a JSON object")
+                request_data = json.loads(self._read_body() or b"{}")
+                if not isinstance(request_data, dict) or not {
+                    "changes", "expected"
+                }.issubset(request_data):
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "error": "This page uses an outdated save format. Reload the dashboard before saving.",
+                        },
+                        409,
+                    )
+                    return
+                payload = request_data["changes"]
+                expected = request_data["expected"]
                 with _commentary_lock:
                     existing, meta = read_shared_data(SHARED_APP_DIR)
+                    conflicts = find_conflicts(existing, payload, expected)
+                    conflict_keys = {(item["scope"], item["field"]) for item in conflicts}
                     now = _now_iso()
                     blocked = []  # [(scope, field)] -- protected deletes we refused
                     changes = {}
                     meta_changes = {}
+                    applied = {}
                     for scope_key, fields in payload.items():
                         if not isinstance(scope_key, str) or not isinstance(fields, dict):
                             raise ValueError("Each commentary scope must contain a JSON object")
@@ -166,9 +181,12 @@ class Handler(SimpleHTTPRequestHandler):
                                 value is None or isinstance(value, str)
                             ):
                                 raise ValueError("Commentary fields must be text or null")
+                            if (scope_key, field) in conflict_keys:
+                                continue
                             is_delete = value is None or not value.strip()
                             if is_delete:
                                 if field not in tgt:
+                                    applied.setdefault(scope_key, {})[field] = None
                                     continue
                                 if field in tgt and _is_protected(scope_key, field, meta):
                                     blocked.append((scope_key, field))
@@ -177,8 +195,10 @@ class Handler(SimpleHTTPRequestHandler):
                                 (meta.get(scope_key) or {}).pop(field, None)
                                 changes.setdefault(scope_key, {})[field] = None
                                 meta_changes.setdefault(scope_key, {})[field] = None
+                                applied.setdefault(scope_key, {})[field] = None
                             else:
                                 is_new = field not in tgt
+                                applied.setdefault(scope_key, {})[field] = value
                                 if is_new or tgt[field] != value:
                                     tgt[field] = value
                                     mscope = meta.setdefault(scope_key, {})
@@ -198,12 +218,31 @@ class Handler(SimpleHTTPRequestHandler):
                         elif not meta.get(scope_key):
                             meta.pop(scope_key, None)
                     if changes:
-                        append_update(SHARED_APP_DIR, changes, meta_changes)
+                        expected_changes = {
+                            scope: {
+                                field: expected[scope][field]
+                                for field in fields
+                            }
+                            for scope, fields in changes.items()
+                        }
+                        append_update(
+                            SHARED_APP_DIR,
+                            changes,
+                            meta_changes,
+                            expected_changes=expected_changes,
+                        )
                         existing, meta = materialize_shared_data(SHARED_APP_DIR)
-                resp = {"ok": True, "commentary": existing}
+                resp = {
+                    "ok": True,
+                    "commentary": existing,
+                    "applied": applied,
+                    "conflicts": conflicts,
+                }
                 if blocked:
                     resp["blocked"] = [{"scope": s, "field": f} for s, f in blocked]
                 self._send_json(resp)
+            except ValueError as e:
+                self._send_json({"ok": False, "error": str(e)}, 400)
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
         elif self.path == "/api/deletion-requests":
@@ -266,6 +305,11 @@ class Handler(SimpleHTTPRequestHandler):
                         with _commentary_lock:
                             existing, meta = read_shared_data(SHARED_APP_DIR)
                             scope_dict = existing.get(rec["scope"])
+                            expected_value = (
+                                scope_dict.get(rec["field"])
+                                if isinstance(scope_dict, dict)
+                                else None
+                            )
                             if scope_dict is not None:
                                 scope_dict.pop(rec["field"], None)
                                 if not scope_dict:
@@ -275,6 +319,9 @@ class Handler(SimpleHTTPRequestHandler):
                                 SHARED_APP_DIR,
                                 {rec["scope"]: {rec["field"]: None}},
                                 {rec["scope"]: {rec["field"]: None}},
+                                expected_changes={
+                                    rec["scope"]: {rec["field"]: expected_value}
+                                },
                             )
                             materialize_shared_data(SHARED_APP_DIR)
                     rec["status"] = "approved" if action == "approve" else "rejected"

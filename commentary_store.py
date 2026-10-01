@@ -161,22 +161,82 @@ def _journal_entries(shared_dir: str) -> list[tuple[pathlib.Path, dict]]:
 
 def read_shared_data(shared_dir: str) -> tuple[dict, dict]:
     shared = pathlib.Path(shared_dir)
-    commentary = _read_object(shared / "commentary.json")
-    meta = _read_object(shared / "commentary_meta.json", missing_ok=True)
-    if any(not isinstance(fields, dict) for fields in commentary.values()):
+    materialized = _read_object(shared / "commentary.json")
+    materialized_meta = _read_object(shared / "commentary_meta.json", missing_ok=True)
+    if any(not isinstance(fields, dict) for fields in materialized.values()):
         raise RuntimeError("Every commentary scope must contain a JSON object")
-    if any(not isinstance(fields, dict) for fields in meta.values()):
+    if any(not isinstance(fields, dict) for fields in materialized_meta.values()):
         raise RuntimeError("Every commentary metadata scope must contain a JSON object")
-    for _, entry in _journal_entries(shared_dir):
+    entries = _journal_entries(shared_dir)
+    baselines = [entry for _, entry in entries if entry.get("kind") == "baseline"]
+    commentary = {} if baselines else materialized
+    meta = {} if baselines else materialized_meta
+    for entry in baselines:
+        _apply_changes(commentary, entry.get("changes"), baseline=True)
+        _apply_meta_changes(meta, entry.get("meta_changes", {}))
+    for _, entry in entries:
         if entry.get("kind") == "baseline":
-            _apply_changes(commentary, entry.get("changes"), baseline=True)
-            _apply_meta_changes(meta, entry.get("meta_changes", {}))
-        elif entry.get("kind") == "update":
-            _apply_changes(commentary, entry.get("changes"))
-            _apply_meta_changes(meta, entry.get("meta_changes", {}))
-        else:
+            continue
+        if entry.get("kind") != "update":
             raise RuntimeError("Commentary journal entry has an unknown kind")
+        changes = entry.get("changes")
+        meta_changes = entry.get("meta_changes", {})
+        expected = entry.get("expected")
+        if expected is not None:
+            conflicts = find_conflicts(commentary, changes, expected)
+            conflict_keys = {(item["scope"], item["field"]) for item in conflicts}
+            changes = {
+                scope: {
+                    field: value for field, value in fields.items()
+                    if (scope, field) not in conflict_keys
+                }
+                for scope, fields in changes.items()
+            }
+            changes = {scope: fields for scope, fields in changes.items() if fields}
+            meta_changes = {
+                scope: {
+                    field: value for field, value in fields.items()
+                    if (scope, field) not in conflict_keys
+                }
+                for scope, fields in meta_changes.items()
+            }
+            meta_changes = {scope: fields for scope, fields in meta_changes.items() if fields}
+        _apply_changes(commentary, changes)
+        _apply_meta_changes(meta, meta_changes)
     return commentary, meta
+
+
+def find_conflicts(commentary: dict, changes: object, expected: object) -> list[dict]:
+    if not isinstance(changes, dict) or not isinstance(expected, dict):
+        raise ValueError("Commentary changes and expected values must be JSON objects")
+    conflicts = []
+    for scope, fields in changes.items():
+        if not isinstance(scope, str) or not isinstance(fields, dict):
+            raise ValueError("Each commentary scope must contain a JSON object")
+        expected_fields = expected.get(scope)
+        if not isinstance(expected_fields, dict):
+            raise ValueError(f"Expected values are missing for commentary scope {scope!r}")
+        for field in fields:
+            if field not in expected_fields:
+                raise ValueError(f"Expected value is missing for commentary field {field!r}")
+            expected_value = expected_fields[field]
+            if expected_value is not None and not isinstance(expected_value, str):
+                raise ValueError("Expected commentary values must be text or null")
+            current_fields = commentary.get(scope)
+            current_value = (
+                current_fields.get(field)
+                if isinstance(current_fields, dict) and field in current_fields
+                else None
+            )
+            if current_value != expected_value:
+                conflicts.append(
+                    {
+                        "scope": scope,
+                        "field": field,
+                        "current": current_value,
+                    }
+                )
+    return conflicts
 
 
 def shared_data_revision(shared_dir: str) -> str:
@@ -199,6 +259,7 @@ def append_update(
     meta_changes: dict | None = None,
     *,
     kind: str = "update",
+    expected_changes: dict | None = None,
 ) -> str:
     if kind not in ("baseline", "update"):
         raise ValueError("kind must be baseline or update")
@@ -214,6 +275,8 @@ def append_update(
         "changes": changes,
         "meta_changes": meta_changes or {},
     }
+    if expected_changes is not None:
+        entry["expected"] = expected_changes
     path = pathlib.Path(shared_dir) / JOURNAL_DIR_NAME / f"{event_id}.json"
     _atomic_write(path, entry)
     return event_id

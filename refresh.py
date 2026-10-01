@@ -626,7 +626,15 @@ def build_data() -> dict:
                 if previous.get(field) != value:
                     changes.setdefault(scope, {})[field] = value
         if changes:
-            append_update(shared_app_dir, changes)
+            expected_changes = {
+                scope: {field: None for field in fields}
+                for scope, fields in changes.items()
+            }
+            append_update(
+                shared_app_dir,
+                changes,
+                expected_changes=expected_changes,
+            )
             commentary, commentary_meta = materialize_shared_data(shared_app_dir)
             log("  journaled rolled-over commentary")
 
