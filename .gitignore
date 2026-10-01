@@ -5,8 +5,6 @@ __pycache__/
 server_start.log
 snapshots_seen.json
 commentary*.json
-commentary_meta.json
-deletion_requests.json
 commentary_updates/
 
 # Generated local snapshots and Claude session artifacts

@@ -595,22 +595,8 @@ def build_data() -> dict:
 
     # ---- merge saved commentary -------------------------------------------
     shared_app_dir = resolve_shared_app_dir()
-    commentary, commentary_meta = read_shared_data(shared_app_dir)
+    commentary = read_shared_data(shared_app_dir)
     log("  merged shared commentary and update journal")
-
-    # Deletion-approval metadata (see server.py's Add Commentary Deletion
-    # Approval Control) -- baked in too so a fresh page load (before the
-    # client's own live poll of /api/commentary lands) already knows which
-    # fields are protected, and so a Save Final Snapshot export carries the
-    # same protection state as the live app.
-    deletion_requests = []
-    dpath = os.path.join(shared_app_dir, "deletion_requests.json")
-    if os.path.isfile(dpath):
-        try:
-            with open(dpath, "r", encoding="utf-8") as f:
-                deletion_requests = json.load(f)
-        except Exception as e:
-            log("  WARN deletion_requests.json:", e)
 
     # Snapshot rollover writes only newly carried fields to the journal. It
     # never writes a stale whole-file copy over a user's concurrent save.
@@ -635,7 +621,7 @@ def build_data() -> dict:
                 changes,
                 expected_changes=expected_changes,
             )
-            commentary, commentary_meta = materialize_shared_data(shared_app_dir)
+            commentary = materialize_shared_data(shared_app_dir)
             log("  journaled rolled-over commentary")
 
     data = {
@@ -662,8 +648,6 @@ def build_data() -> dict:
         "pipeline_positions": pipeline_positions_out,
         "manual": read_manual_inputs(),
         "commentary": commentary,
-        "commentary_meta": commentary_meta,
-        "deletion_requests": deletion_requests,
     }
     return data
 

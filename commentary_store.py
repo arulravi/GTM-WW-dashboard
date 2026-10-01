@@ -52,10 +52,8 @@ def resolve_shared_app_dir() -> str:
     )
 
 
-def _read_object(path: pathlib.Path, *, missing_ok: bool = False) -> dict:
+def _read_object(path: pathlib.Path) -> dict:
     if not path.exists():
-        if missing_ok:
-            return {}
         raise RuntimeError(f"Required commentary storage file is missing: {path}")
     try:
         with path.open("r", encoding="utf-8-sig") as source:
@@ -115,27 +113,6 @@ def _apply_changes(target: dict, changes: object, *, baseline: bool = False) -> 
                 raise RuntimeError("Commentary journal values must be text or null")
 
 
-def _apply_meta_changes(target: dict, changes: object) -> None:
-    if not isinstance(changes, dict):
-        raise RuntimeError("Commentary journal entry has invalid metadata changes")
-    for scope, fields in changes.items():
-        if not isinstance(scope, str) or not isinstance(fields, dict):
-            raise RuntimeError("Commentary journal entry has invalid metadata scope")
-        for field, value in fields.items():
-            if not isinstance(field, str):
-                raise RuntimeError("Commentary journal entry has an invalid metadata field")
-            if value is None:
-                current = target.get(scope)
-                if isinstance(current, dict):
-                    current.pop(field, None)
-                    if not current:
-                        target.pop(scope, None)
-            elif isinstance(value, dict):
-                target.setdefault(scope, {})[field] = value
-            else:
-                raise RuntimeError("Commentary journal metadata must be an object or null")
-
-
 def _journal_entries(shared_dir: str) -> list[tuple[pathlib.Path, dict]]:
     journal_dir = pathlib.Path(shared_dir) / JOURNAL_DIR_NAME
     if not journal_dir.exists():
@@ -159,28 +136,22 @@ def _journal_entries(shared_dir: str) -> list[tuple[pathlib.Path, dict]]:
     )
 
 
-def read_shared_data(shared_dir: str) -> tuple[dict, dict]:
+def read_shared_data(shared_dir: str) -> dict:
     shared = pathlib.Path(shared_dir)
     materialized = _read_object(shared / "commentary.json")
-    materialized_meta = _read_object(shared / "commentary_meta.json", missing_ok=True)
     if any(not isinstance(fields, dict) for fields in materialized.values()):
         raise RuntimeError("Every commentary scope must contain a JSON object")
-    if any(not isinstance(fields, dict) for fields in materialized_meta.values()):
-        raise RuntimeError("Every commentary metadata scope must contain a JSON object")
     entries = _journal_entries(shared_dir)
     baselines = [entry for _, entry in entries if entry.get("kind") == "baseline"]
     commentary = {} if baselines else materialized
-    meta = {} if baselines else materialized_meta
     for entry in baselines:
         _apply_changes(commentary, entry.get("changes"), baseline=True)
-        _apply_meta_changes(meta, entry.get("meta_changes", {}))
     for _, entry in entries:
         if entry.get("kind") == "baseline":
             continue
         if entry.get("kind") != "update":
             raise RuntimeError("Commentary journal entry has an unknown kind")
         changes = entry.get("changes")
-        meta_changes = entry.get("meta_changes", {})
         expected = entry.get("expected")
         if expected is not None:
             conflicts = find_conflicts(commentary, changes, expected)
@@ -193,17 +164,8 @@ def read_shared_data(shared_dir: str) -> tuple[dict, dict]:
                 for scope, fields in changes.items()
             }
             changes = {scope: fields for scope, fields in changes.items() if fields}
-            meta_changes = {
-                scope: {
-                    field: value for field, value in fields.items()
-                    if (scope, field) not in conflict_keys
-                }
-                for scope, fields in meta_changes.items()
-            }
-            meta_changes = {scope: fields for scope, fields in meta_changes.items() if fields}
         _apply_changes(commentary, changes)
-        _apply_meta_changes(meta, meta_changes)
-    return commentary, meta
+    return commentary
 
 
 def find_conflicts(commentary: dict, changes: object, expected: object) -> list[dict]:
@@ -256,7 +218,6 @@ def shared_data_revision(shared_dir: str) -> str:
 def append_update(
     shared_dir: str,
     changes: dict,
-    meta_changes: dict | None = None,
     *,
     kind: str = "update",
     expected_changes: dict | None = None,
@@ -273,7 +234,6 @@ def append_update(
         "event_id": event_id,
         "created_at": created_at,
         "changes": changes,
-        "meta_changes": meta_changes or {},
     }
     if expected_changes is not None:
         entry["expected"] = expected_changes
@@ -282,9 +242,8 @@ def append_update(
     return event_id
 
 
-def materialize_shared_data(shared_dir: str) -> tuple[dict, dict]:
-    commentary, meta = read_shared_data(shared_dir)
+def materialize_shared_data(shared_dir: str) -> dict:
+    commentary = read_shared_data(shared_dir)
     shared = pathlib.Path(shared_dir)
     _atomic_write(shared / "commentary.json", commentary)
-    _atomic_write(shared / "commentary_meta.json", meta)
-    return commentary, meta
+    return commentary

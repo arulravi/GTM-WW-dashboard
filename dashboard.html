@@ -118,21 +118,6 @@ nav.tabs button.active{color:#fff;border-bottom-color:var(--red)}
 .ro-sub{display:block;font-size:10px;color:var(--muted);margin-top:2px;font-weight:600}
 .mv{font-size:11px;padding:3px 9px;border-radius:20px;font-weight:650;border:1px solid var(--line)}
 .mini-x{border:none;background:none;color:var(--warn);cursor:pointer;font-size:11px;padding:0 2px;font-weight:700}
-/* Add Commentary Deletion Approval Control -- a commentary box with a
-   pending deletion request stays visibly editable/readable (nothing is
-   hidden), just flagged with a dashed amber border so it's obvious a
-   request is outstanding without needing to open the panel to check. */
-.cmt.pending-delete{border:1px dashed var(--warn) !important;background:var(--warn-bg) !important}
-#delReqBadge{display:inline-block;min-width:16px;padding:0 5px;margin-left:5px;border-radius:10px;
-  background:var(--red);color:#fff;font-size:10px;font-weight:800;line-height:16px;text-align:center;vertical-align:middle}
-.delreq-row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--line);font-size:12.5px}
-.delreq-row:last-child{border-bottom:none}
-.delreq-meta{color:var(--muted);font-size:11px;margin-top:2px}
-.delreq-val{color:var(--ink);margin-top:4px;white-space:pre-wrap;font-weight:600}
-.delreq-status{font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;padding:2px 8px;border-radius:10px}
-.delreq-status.pending{background:var(--warn-bg);color:var(--warn)}
-.delreq-status.approved{background:var(--bad-bg);color:var(--bad)}
-.delreq-status.rejected{background:var(--good-bg);color:var(--good)}
 .mini-x:hover{text-decoration:underline}
 .notes-block{margin-top:10px;border-top:1px solid var(--line);padding-top:8px}
 .notes-label{display:block;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px}
@@ -423,13 +408,11 @@ footer{color:var(--muted);font-size:10px;text-align:center;padding:6px 0 4px}
   <div style="display:flex;align-items:center;gap:6px;padding-right:10px">
     <nav class="tabs" id="scopeTabs" style="flex:1 1 auto;min-width:0"></nav>
     <button class="iconbtn" id="l3ViewBtn" onclick="toggleL3Picker()" title="Choose which organization (L3) tabs to show" style="flex:0 0 auto;white-space:nowrap">🗂️ L3 View</button>
-    <button class="iconbtn" id="delReqBtn" onclick="toggleDeletionPanel()" title="Protected commentary deletion requests" style="flex:0 0 auto;white-space:nowrap">🗑️ Deletion Requests<span id="delReqBadge"></span></button>
   </div>
 </header>
 
 <div class="wrap">
   <div id="l3Picker" style="display:none;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:10px 12px;background:var(--card);border:1px solid var(--line);border-radius:8px;margin-top:8px"></div>
-  <div id="deletionPanel" style="display:none;flex-direction:column;gap:8px;padding:12px 14px;background:var(--card);border:1px solid var(--line);border-radius:8px;margin-top:8px"></div>
   <div class="subtabs" id="subTabs">
     <button data-sub="opex" class="active">💰 Opex Overview</button>
     <button data-sub="hc">👥 Headcount</button>
@@ -603,12 +586,7 @@ const UNLOCK_KEY = "gtmww_unlock_until";
 })();
 
 const D = window.OPEX_DATA;
-// Deletion-approval metadata/queue baked in by refresh.py -- default to empty
-// so older snapshots (built before this feature existed) don't error out;
-// they'll just show everything as protected (no meta record = protected)
-// with no requests, which is the safe default anyway.
-D.commentary_meta = D.commentary_meta || {};
-D.deletion_requests = D.deletion_requests || [];
+localStorage.removeItem("app_user_name");
 const CQ = D.meta.current_quarter;
 const $ = s => document.querySelector(s);
 const fmtM = v => (v<0?"-$":"$") + Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1}) + "M";
@@ -2337,154 +2315,17 @@ async function pullSharedCommentary(){
     const r=await fetch("/api/commentary",{cache:"no-store"});
     const j=await r.json();
     if(!j.ok) return;
-    if(j.modified===__lastCommentaryPull){ await pullDeletionRequests(); return; }   // nothing new on disk
+    if(j.modified===__lastCommentaryPull) return;   // nothing new on disk
     __lastCommentaryPull=j.modified;
     // Adopt the server file wholesale (it's the merged authoritative source),
     // so a colleague's DELETE reflects here too -- not just their additions.
     // The user's own unsaved local edits still overlay via loadComment's
     // localStorage merge, so nothing in-progress is lost.
     if(j.commentary && typeof j.commentary==="object") D.commentary=j.commentary;
-    if(j.meta && typeof j.meta==="object") D.commentary_meta=j.meta;
-    await pullDeletionRequests();
     const activeIsNote=document.activeElement && document.activeElement.classList &&
       document.activeElement.classList.contains("cmt");
     if(!activeIsNote) renderAll();
   }catch(e){ /* offline or server hiccup -- silently skip, try again next poll */ }
-}
-
-// ---- Add Commentary Deletion Approval Control ------------------------------
-// Every existing commentary field (anything already saved before this feature
-// shipped) is permanently protected -- clicking X on it can never delete it
-// outright, only file a request that sits until Arul approves or rejects it.
-// A brand-new field gets a 10-day grace period (direct delete allowed) before
-// the same protection kicks in. See server.py's _is_protected for the
-// server-side mirror of this same rule, which is the one that actually
-// enforces it -- this client copy is just so the UI can decide up front
-// whether to show a confirm-and-file-a-request flow instead of just deleting.
-const PROTECT_AFTER_DAYS=10;
-function isFieldProtected(scope, field){
-  const m=((D.commentary_meta||{})[scope]||{})[field];
-  if(!m) return true;                 // no tracking record -> pre-existing -> always protected
-  if(m.baseline) return true;
-  const ts=m.updated_at||m.created_at;
-  if(!ts) return true;
-  const ageDays=(Date.now()-new Date(ts).getTime())/86400000;
-  return ageDays>=PROTECT_AFTER_DAYS;
-}
-function pendingDeletionFor(scope, field){
-  return (D.deletion_requests||[]).find(r=>r.scope===scope && r.field===field && r.status==="pending");
-}
-// "Who's asking" -- a plain name prompt, remembered per browser. This is a
-// workflow safeguard against accidental deletion, not real access control:
-// the app has no login system, so anyone can type "Arul" here. Good enough
-// for a small trusted team where the goal is preventing careless deletion,
-// not defending against a bad actor (confirmed explicitly before building
-// this rather than overselling it as real security).
-function myName(){
-  let n=localStorage.getItem("app_user_name");
-  if(!n){
-    n=(prompt("Your name? (shown on any commentary-deletion request you file)")||"").trim()||"Unknown";
-    localStorage.setItem("app_user_name", n);
-  }
-  return n;
-}
-function changeMyName(){
-  const n=(prompt("Your name?", localStorage.getItem("app_user_name")||"")||"").trim();
-  if(n){ localStorage.setItem("app_user_name", n); renderDeletionPanel(); }
-}
-function isArul(){ return (localStorage.getItem("app_user_name")||"").trim().toLowerCase()==="arul"; }
-
-async function pullDeletionRequests(){
-  if(!location.protocol.startsWith("http")) return;
-  try{
-    const r=await fetch("/api/deletion-requests",{cache:"no-store"});
-    const j=await r.json();
-    if(j.ok) D.deletion_requests=j.requests||[];
-    updateDelReqBadge();
-  }catch(e){ /* offline -- keep whatever was baked into data.js/last poll */ }
-}
-function updateDelReqBadge(){
-  const n=(D.deletion_requests||[]).filter(r=>r.status==="pending").length;
-  const el=$("#delReqBadge"); if(el) el.textContent=n?String(n):"";
-}
-// Shows the protected-commentary message and, if the user confirms, files a
-// deletion request instead of actually deleting anything. Returns true if the
-// caller should treat this as "handled -- don't delete", false if there was
-// nothing protected here and the caller should proceed with its normal
-// delete/clear path.
-function guardProtectedDelete(scope, field, hadValue){
-  if(!hadValue) return false;                 // nothing existed to delete/protect
-  const already=pendingDeletionFor(scope, field);
-  if(already){
-    alert(`This commentary already has a pending deletion request (requested by ${already.requested_by} on ${new Date(already.requested_at).toLocaleString()}).\n\nIt stays visible until Arul approves or rejects it.`);
-    return true;
-  }
-  if(!isFieldProtected(scope, field)) return false;
-  if(confirm("This commentary is protected and requires Arul's approval for deletion.\n\nRequest deletion?")){
-    fileDeletionRequest(scope, field).then(()=>{ renderAll(); });
-  }
-  return true;
-}
-async function fileDeletionRequest(scope, field){
-  try{
-    const r=await fetch("/api/deletion-requests",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({scope, field, requested_by:myName()})});
-    const j=await r.json();
-    if(!j.ok){ alert("Could not file deletion request: "+(j.error||"unknown error")); return null; }
-    if(!D.deletion_requests) D.deletion_requests=[];
-    if(!D.deletion_requests.some(x=>x.id===j.request.id)) D.deletion_requests.push(j.request);
-    updateDelReqBadge();
-    return j.request;
-  }catch(e){ alert("Could not file deletion request -- check your connection and try again."); return null; }
-}
-async function resolveDeletionRequest(id, action){
-  if(!isArul()){ alert("Only Arul can approve or reject a deletion request."); return; }
-  try{
-    const r=await fetch("/api/deletion-requests/resolve",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id, action, resolved_by:myName()})});
-    const j=await r.json();
-    if(!j.ok){ alert("Could not "+action+" request: "+(j.error||"unknown error")); return; }
-    await pullSharedCommentary();   // re-pulls both commentary (if approved, the field is now really gone) and the request list
-    renderDeletionPanel();
-    renderAll();
-  }catch(e){ alert("Could not "+action+" request -- check your connection and try again."); }
-}
-function toggleDeletionPanel(){
-  const el=$("#deletionPanel"); if(!el) return;
-  const show=(el.style.display==="none"||!el.style.display);
-  el.style.display=show?"flex":"none";
-  if(show) renderDeletionPanel();
-}
-function renderDeletionPanel(){
-  const el=$("#deletionPanel"); if(!el) return;
-  const all=(D.deletion_requests||[]).slice().sort((a,b)=>b.requested_at.localeCompare(a.requested_at));
-  const pending=all.filter(r=>r.status==="pending");
-  const resolved=all.filter(r=>r.status!=="pending").slice(0,20);
-  const you=localStorage.getItem("app_user_name")||"";
-  const arul=isArul();
-  const row=r=>{
-    const actions=(r.status==="pending" && arul)
-      ? `<div style="display:flex;gap:6px;margin-top:6px">`+
-        `<button class="btn" onclick="resolveDeletionRequest('${r.id}','approve')">✓ Approve (permanently delete)</button>`+
-        `<button class="btn" onclick="resolveDeletionRequest('${r.id}','reject')">✕ Reject (keep commentary)</button>`+
-        `</div>`
-      : "";
-    return `<div class="delreq-row"><div style="flex:1 1 auto;min-width:0">`+
-      `<div><b>${esc(r.scope)}</b> — ${esc(r.field)} <span class="delreq-status ${r.status}">${r.status}</span></div>`+
-      `<div class="delreq-val">${esc(r.value)}</div>`+
-      `<div class="delreq-meta">Requested by ${esc(r.requested_by)} on ${new Date(r.requested_at).toLocaleString()}`+
-      (r.resolved_by?` · ${r.status} by ${esc(r.resolved_by)} on ${new Date(r.resolved_at).toLocaleString()}`:"")+
-      `</div>`+actions+`</div></div>`;
-  };
-  el.innerHTML=
-    `<div class="toolbar" style="margin:0"><h3 style="margin:0;margin-right:auto">🗑️ Commentary Deletion Requests</h3>`+
-    `<span style="font-size:11.5px;color:var(--muted)">You are: <b>${esc(you||"not set")}</b></span>`+
-    `<button class="iconbtn" onclick="changeMyName()" style="background:none;border:1px solid var(--line);color:var(--ink)">Change name</button></div>`+
-    (arul?"":`<div style="font-size:11.5px;color:var(--muted)">Approve/Reject are only shown when your saved name is "Arul".</div>`)+
-    `<div>${pending.length?pending.map(row).join(""):`<div style="font-size:12.5px;color:var(--muted);padding:6px 0">No pending requests.</div>`}</div>`+
-    (resolved.length?`<div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--line)">`+
-      `<div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px">Recent history</div>`+
-      resolved.map(row).join("")+`</div>`:"");
 }
 
 // ---- Variance Walk: {tgt} -> {cur} bridge, drivers pulled from the same
@@ -2728,10 +2569,6 @@ function showNoteCard(cardId, fk, icon, label, placeholder){
 function removeNoteCard(cardId, fk){
   const key=scopeKey();
   const ta=$("#"+cardId+" textarea");
-  const current=(ta?ta.value:"")||(loadComment()[fk]||"");
-  // Add Commentary Deletion Approval Control: a protected note can't be
-  // cleared directly -- offer to file a request instead and leave it as-is.
-  if(guardProtectedDelete(key, fk, !!current.trim())) return;
   queueCommentaryChange(key, fk, "");
   if(ta) ta.value="";
   // Clear the in-memory server baseline (D.commentary) too, not just the
@@ -2754,15 +2591,6 @@ function hookComment(){
       t.dataset.hooked="1";
       t.addEventListener("input", ()=>{
         t.style.height="auto"; t.style.height=t.scrollHeight+"px";
-        // Add Commentary Deletion Approval Control: clearing a protected
-        // field to empty doesn't delete it -- put the text right back (so it
-        // "remains visible", per spec) and offer to file a request instead.
-        const wasNonEmpty=(t.dataset.loaded||"").trim()!=="";
-        if(t.value.trim()==="" && wasNonEmpty && guardProtectedDelete(scope, t.dataset.ce, true)){
-          t.value=t.dataset.loaded;
-          t.style.height="auto"; t.style.height=t.scrollHeight+"px";
-          return;   // don't fall through to the mirror/autosave/renderStory path below
-        }
         // The Variance Walk and the Opex Walk table each render their own
         // textarea for the same cost element (same data-ce key) so editing
         // either updates both -- mirror the keystroke into any sibling(s)
@@ -2794,12 +2622,6 @@ function hookComment(){
       });
     }
     t.style.height="auto"; t.style.height=t.scrollHeight+"px";
-    // Visible flag for a field with an outstanding deletion request -- doesn't
-    // hide or alter the text, just marks it so nobody has to open the
-    // Deletion Requests panel to notice one's pending.
-    const pending=pendingDeletionFor(scope, t.dataset.ce);
-    t.classList.toggle("pending-delete", !!pending);
-    t.title=pending?`Pending deletion approval -- requested by ${pending.requested_by} on ${new Date(pending.requested_at).toLocaleString()}`:"";
   });
 }
 function queueCommentaryChange(scope, field, value){
@@ -2942,27 +2764,12 @@ function saveCommentary(quiet){
           __commentaryNextExpected[scope]=__commentaryNextExpected[scope]||{};
           __commentaryNextExpected[scope][field]=current===undefined?null:current;
         });
-        (j.blocked||[]).forEach(({scope,field})=>{
-          __commentaryNextExpected[scope]=__commentaryNextExpected[scope]||{};
-          const current=(D.commentary[scope]||{})[field];
-          __commentaryNextExpected[scope][field]=current===undefined?null:current;
-        });
         if(revision===__commentarySaveRevision){
           if(conflicts.length){
             showFail("conflict — latest shared value loaded; edit again to reapply");
           }else{
             showOk();
           }
-        }
-        // Backstop: the server itself refuses to delete a protected field
-        // (see server.py's Add Commentary Deletion Approval Control), so if
-        // the client-side guard somehow didn't catch this -- e.g. a stale tab
-        // left open from before this feature shipped -- `blocked` lists which
-        // fields it refused. Re-render so those boxes snap back to showing
-        // their real (never actually deleted) text instead of sitting empty.
-        if(revision===__commentarySaveRevision && j.blocked && j.blocked.length){
-          alert("Some commentary couldn't be deleted directly because it's protected -- use the ✕ on the box again to file a deletion request instead.");
-          renderAll();
         }
       })
       .catch(e=>{
@@ -2974,8 +2781,8 @@ function saveCommentary(quiet){
     // cleared from the local safety copy by an older response.
     __commentarySaveChain=__commentarySaveChain.catch(()=>{}).then(send);
   }else if(!quiet){
-    // Offline explicit saves export only the changed cells for later merging.
-    const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+    // Offline explicit saves export only changed cells and their base values.
+    const blob=new Blob([JSON.stringify({changes:payload,expected:batch.expected},null,2)],{type:"application/json"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="commentary.json"; a.click();
     showOk();
   }else{
@@ -3490,7 +3297,7 @@ window.addEventListener("resize", syncHeaderHeight);
 new ResizeObserver(syncHeaderHeight).observe(document.querySelector("header"));
 
 // ---- wire up ----
-buildScopeTabs(); fillL4(); fillVers(); setSub(state.sub); renderAll(); wireAnaplanUpload(); updateDelReqBadge();
+buildScopeTabs(); fillL4(); fillVers(); setSub(state.sub); renderAll(); wireAnaplanUpload();
 syncHeaderHeight();
 // Live commentary sharing across users: pull shortly after load (give the
 // heavier initial render a moment first), then keep polling so a colleague's

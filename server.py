@@ -13,10 +13,7 @@ Endpoints
   GET  /<file>                  -> static files (data.js, manifest, …)
   POST /api/refresh             -> re-run the SQL ETL, rewrite data.js, return meta
   POST /api/commentary          -> save commentary.json (so it survives refreshes)
-  GET  /api/commentary          -> live read of commentary.json + its metadata
-  GET  /api/deletion-requests   -> list all deletion-approval requests
-  POST /api/deletion-requests   -> file a new deletion-approval request
-  POST /api/deletion-requests/resolve -> approve or reject a pending request
+  GET  /api/commentary          -> live read of commentary.json
   POST /api/snapshot            -> save a finalized, self-contained HTML snapshot to snapshots/
   GET  /api/snapshots           -> list saved snapshots (name, size, modified)
 
@@ -31,7 +28,6 @@ import re
 import socket
 import sys
 import threading
-import uuid
 import webbrowser
 import subprocess
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -53,63 +49,11 @@ SNAPSHOT_DIR = os.path.join(HERE, "snapshots")
 
 SHARED_APP_DIR = resolve_shared_app_dir()
 COMMENTARY_PATH = os.path.join(SHARED_APP_DIR, "commentary.json")
-COMMENTARY_META_PATH = os.path.join(SHARED_APP_DIR, "commentary_meta.json")
-DELETION_REQUESTS_PATH = os.path.join(SHARED_APP_DIR, "deletion_requests.json")
-PROTECT_AFTER_DAYS = 10
 
 # The lock serializes local requests. Cross-device writes are separate
 # immutable journal entries, so OneDrive cannot make one user's whole-file
 # replacement erase another user's save.
 _commentary_lock = threading.Lock()
-_deletion_lock = threading.Lock()
-
-
-def _load_json(path, default):
-    if not os.path.isfile(path):
-        return default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return default
-
-
-def _save_json_atomic(path, obj):
-    tmp_path = path + f".tmp{os.getpid()}"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, path)
-
-
-def _now_iso():
-    return datetime.datetime.now().isoformat(timespec="seconds")
-
-
-# ---- Deletion-approval protection -----------------------------------------
-# A field with NO metadata record at all is one that existed before this
-# feature shipped (the metadata store only ever gets a row the moment a field
-# is first saved through the code below) -- treated as permanently protected,
-# exactly like every other pre-existing commentary. A field WITH a record is
-# one created after this feature shipped: protected only once it's at least
-# PROTECT_AFTER_DAYS old, measured from whichever is more recent, its
-# creation or its last material edit (both stamped below).
-def _is_protected(scope, field, meta):
-    m = (meta.get(scope) or {}).get(field)
-    if not m:
-        return True
-    if m.get("baseline"):
-        return True
-    ts_str = m.get("updated_at") or m.get("created_at")
-    if not ts_str:
-        return True
-    try:
-        ts = datetime.datetime.fromisoformat(ts_str)
-    except Exception:
-        return True
-    age_days = (datetime.datetime.now() - ts).total_seconds() / 86400.0
-    return age_days >= PROTECT_AFTER_DAYS
 
 
 class Handler(SimpleHTTPRequestHandler):
@@ -164,13 +108,10 @@ class Handler(SimpleHTTPRequestHandler):
                 payload = request_data["changes"]
                 expected = request_data["expected"]
                 with _commentary_lock:
-                    existing, meta = read_shared_data(SHARED_APP_DIR)
+                    existing = read_shared_data(SHARED_APP_DIR)
                     conflicts = find_conflicts(existing, payload, expected)
                     conflict_keys = {(item["scope"], item["field"]) for item in conflicts}
-                    now = _now_iso()
-                    blocked = []  # [(scope, field)] -- protected deletes we refused
                     changes = {}
-                    meta_changes = {}
                     applied = {}
                     for scope_key, fields in payload.items():
                         if not isinstance(scope_key, str) or not isinstance(fields, dict):
@@ -188,35 +129,17 @@ class Handler(SimpleHTTPRequestHandler):
                                 if field not in tgt:
                                     applied.setdefault(scope_key, {})[field] = None
                                     continue
-                                if field in tgt and _is_protected(scope_key, field, meta):
-                                    blocked.append((scope_key, field))
-                                    continue
                                 tgt.pop(field, None)
-                                (meta.get(scope_key) or {}).pop(field, None)
                                 changes.setdefault(scope_key, {})[field] = None
-                                meta_changes.setdefault(scope_key, {})[field] = None
                                 applied.setdefault(scope_key, {})[field] = None
                             else:
                                 is_new = field not in tgt
                                 applied.setdefault(scope_key, {})[field] = value
                                 if is_new or tgt[field] != value:
                                     tgt[field] = value
-                                    mscope = meta.setdefault(scope_key, {})
-                                    if is_new:
-                                        mscope[field] = {
-                                            "baseline": False,
-                                            "created_at": now,
-                                            "updated_at": now,
-                                        }
-                                    elif field in mscope:
-                                        mscope[field]["updated_at"] = now
                                     changes.setdefault(scope_key, {})[field] = value
-                                    meta_changes.setdefault(scope_key, {})[field] = mscope.get(field)
                         if not tgt:
                             existing.pop(scope_key, None)
-                            meta.pop(scope_key, None)
-                        elif not meta.get(scope_key):
-                            meta.pop(scope_key, None)
                     if changes:
                         expected_changes = {
                             scope: {
@@ -228,107 +151,18 @@ class Handler(SimpleHTTPRequestHandler):
                         append_update(
                             SHARED_APP_DIR,
                             changes,
-                            meta_changes,
                             expected_changes=expected_changes,
                         )
-                        existing, meta = materialize_shared_data(SHARED_APP_DIR)
+                        existing = materialize_shared_data(SHARED_APP_DIR)
                 resp = {
                     "ok": True,
                     "commentary": existing,
                     "applied": applied,
                     "conflicts": conflicts,
                 }
-                if blocked:
-                    resp["blocked"] = [{"scope": s, "field": f} for s, f in blocked]
                 self._send_json(resp)
             except ValueError as e:
                 self._send_json({"ok": False, "error": str(e)}, 400)
-            except Exception as e:
-                self._send_json({"ok": False, "error": str(e)}, 500)
-        elif self.path == "/api/deletion-requests":
-            try:
-                body = json.loads(self._read_body() or b"{}")
-                scope = (body.get("scope") or "").strip()
-                field = (body.get("field") or "").strip()
-                requested_by = (body.get("requested_by") or "Unknown").strip() or "Unknown"
-                if not scope or not field:
-                    self._send_json({"ok": False, "error": "scope and field are required"}, 400)
-                    return
-                with _commentary_lock:
-                    existing, _ = read_shared_data(SHARED_APP_DIR)
-                    value = (existing.get(scope) or {}).get(field)
-                if value is None or not str(value).strip():
-                    self._send_json({"ok": False, "error": "nothing to delete for that scope/field"}, 400)
-                    return
-                with _deletion_lock:
-                    requests = _load_json(DELETION_REQUESTS_PATH, [])
-                    # Don't pile up duplicate pending requests for the same
-                    # scope+field -- surface the existing one instead.
-                    dup = next((r for r in requests
-                                if r["scope"] == scope and r["field"] == field and r["status"] == "pending"), None)
-                    if dup:
-                        self._send_json({"ok": True, "request": dup, "duplicate": True})
-                        return
-                    rec = {
-                        "id": uuid.uuid4().hex[:12],
-                        "scope": scope, "field": field, "value": value,
-                        "requested_by": requested_by, "requested_at": _now_iso(),
-                        "status": "pending", "resolved_by": None, "resolved_at": None,
-                    }
-                    requests.append(rec)
-                    _save_json_atomic(DELETION_REQUESTS_PATH, requests)
-                self._send_json({"ok": True, "request": rec})
-            except Exception as e:
-                self._send_json({"ok": False, "error": str(e)}, 500)
-        elif self.path == "/api/deletion-requests/resolve":
-            try:
-                body = json.loads(self._read_body() or b"{}")
-                req_id = body.get("id")
-                action = body.get("action")
-                resolved_by = (body.get("resolved_by") or "Unknown").strip() or "Unknown"
-                if action not in ("approve", "reject"):
-                    self._send_json({"ok": False, "error": "action must be approve or reject"}, 400)
-                    return
-                with _deletion_lock:
-                    requests = _load_json(DELETION_REQUESTS_PATH, [])
-                    rec = next((r for r in requests if r["id"] == req_id), None)
-                    if not rec:
-                        self._send_json({"ok": False, "error": "request not found"}, 404)
-                        return
-                    if rec["status"] != "pending":
-                        self._send_json({"ok": False, "error": f"request already {rec['status']}"}, 409)
-                        return
-                    if action == "approve":
-                        # This is the ONLY code path allowed to actually drop a
-                        # protected field's value -- everywhere else (the
-                        # regular /api/commentary save) refuses to.
-                        with _commentary_lock:
-                            existing, meta = read_shared_data(SHARED_APP_DIR)
-                            scope_dict = existing.get(rec["scope"])
-                            expected_value = (
-                                scope_dict.get(rec["field"])
-                                if isinstance(scope_dict, dict)
-                                else None
-                            )
-                            if scope_dict is not None:
-                                scope_dict.pop(rec["field"], None)
-                                if not scope_dict:
-                                    existing.pop(rec["scope"], None)
-                            (meta.get(rec["scope"]) or {}).pop(rec["field"], None)
-                            append_update(
-                                SHARED_APP_DIR,
-                                {rec["scope"]: {rec["field"]: None}},
-                                {rec["scope"]: {rec["field"]: None}},
-                                expected_changes={
-                                    rec["scope"]: {rec["field"]: expected_value}
-                                },
-                            )
-                            materialize_shared_data(SHARED_APP_DIR)
-                    rec["status"] = "approved" if action == "approve" else "rejected"
-                    rec["resolved_by"] = resolved_by
-                    rec["resolved_at"] = _now_iso()
-                    _save_json_atomic(DELETION_REQUESTS_PATH, requests)
-                self._send_json({"ok": True, "request": rec})
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
         elif self.path == "/api/snapshot":
@@ -370,20 +204,11 @@ class Handler(SimpleHTTPRequestHandler):
             # Live read of the on-disk commentary.json, independent of the last
             # SQL refresh -- this is what lets one person's saved note show up
             # for a colleague (once OneDrive syncs the file) without anyone
-            # needing to click the full 🔄 Refresh. `meta` rides along so the
-            # client can tell which fields are protected (see Add Commentary
-            # Deletion Approval Control) without a second round trip.
+            # needing to click the full 🔄 Refresh.
             try:
-                data, meta = read_shared_data(SHARED_APP_DIR)
-                self._send_json({"ok": True, "commentary": data, "meta": meta,
+                data = read_shared_data(SHARED_APP_DIR)
+                self._send_json({"ok": True, "commentary": data,
                                   "modified": shared_data_revision(SHARED_APP_DIR)})
-            except Exception as e:
-                self._send_json({"ok": False, "error": str(e)}, 500)
-            return
-        if path_only == "/api/deletion-requests":
-            try:
-                requests = _load_json(DELETION_REQUESTS_PATH, [])
-                self._send_json({"ok": True, "requests": requests})
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
             return

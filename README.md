@@ -47,7 +47,8 @@ Unchanged cells are omitted, so saving one cell cannot blank another cell in
 the same L3 or any other L3. Two laptops syncing at once cannot erase each
 other's updates by replacing the same whole file. Refreshes and restarts read
 the merged view; malformed or missing shared data is an error, not an
-invitation to initialize an empty file.
+invitation to initialize an empty file. Users can edit or clear a commentary
+cell directly; the change is saved through the same cell-level journal.
 
 The migration issue was that the old server stored `commentary.json` beside
 `server.py`. When the code was launched from a GitHub checkout, that made a
