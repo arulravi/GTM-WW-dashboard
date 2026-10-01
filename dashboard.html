@@ -463,11 +463,14 @@ footer{color:var(--muted);font-size:10px;text-align:center;padding:6px 0 4px}
       <div class="tblwrap scrollbox"><table id="hcTbl"></table></div>
     </div>
     <div class="card">
-      <h3>📈 Monthly Hiring — FY26 <span style="text-transform:none;font-weight:400;color:var(--muted)">(actual hire date, by month, with quarterly totals)</span></h3>
+      <h3>📈 Monthly Hiring <span style="text-transform:none;font-weight:400;color:var(--muted)">(actual hire date, by month, with quarterly totals)</span></h3>
       <div class="toolbar" style="margin:10px 0;align-items:flex-start">
-        <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding-top:5px">Quarter columns</span>
-        <div id="hcQuarterFilter" style="display:flex;flex-wrap:wrap;gap:6px 12px;max-width:100%"></div>
-        <span class="note" style="margin:5px 0 0">Select the quarters to show in Monthly Hiring.</span>
+        <button class="btn" id="hcQuarterColumnsBtn" type="button" onclick="toggleHcQuarterColumns()">Columns</button>
+        <div id="hcQuarterColumnsPanel" style="display:none;align-items:flex-start;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;padding-top:5px">Quarter columns</span>
+          <div id="hcQuarterFilter" style="display:flex;flex-wrap:wrap;gap:6px 12px;max-width:100%"></div>
+          <span class="note" style="margin:5px 0 0">Select the quarters to show in Monthly Hiring.</span>
+        </div>
       </div>
       <div class="tblwrap scrollbox" style="max-height:340px;margin-top:10px"><table id="hireTbl"></table></div>
       <div class="note" style="margin-top:6px">Current fiscal month (in progress) will keep updating as more hires are recorded.</div>
@@ -2209,6 +2212,14 @@ function setAllHcQuarters(checked){
   renderHcQuarterFilter();
   renderMonthlyHires();
   renderHcWalk();
+}
+function toggleHcQuarterColumns(){
+  const panel=$("#hcQuarterColumnsPanel");
+  const button=$("#hcQuarterColumnsBtn");
+  if(!panel||!button) return;
+  const show=panel.style.display==="none";
+  panel.style.display=show?"flex":"none";
+  button.setAttribute("aria-expanded",String(show));
 }
 function qShort(q){ const m=q.match(/Q(\d)/); return m?("Q"+m[1]):q; }
 function scopeName(){
