@@ -18,25 +18,32 @@ database that everyone reads from. This part works exactly the way people assume
 
 **2. The commentary (the notes people type in) — shared through OneDrive sync**
 - The application code may now be checked out from GitHub, but the shared data
-  file remains `commentary.json` in the SharePoint folder synced by OneDrive.
+  remains in the SharePoint folder synced by OneDrive.
 - `server.py` resolves that shared folder from the user's OneDrive location (or
-  `GTM_WW_SHARED_APP_DIR`) and reads/writes `commentary.json`,
-  `commentary_meta.json`, and deletion requests there, independently of where
-  the GitHub checkout lives. It refuses to silently create a private copy next
-  to the GitHub checkout.
-- Each person runs a local copy of `server.py` on their laptop. Commentary
-  changes are written to that laptop's synced copy of the shared file; OneDrive
-  propagates the updates to other users. The browser pulls the latest shared
-  commentary on startup, on focus, and periodically while open.
-- L3-page scope keys are kept separate within `commentary.json`, so saving one
-  L3 updates that L3's fields without replacing other L3 entries.
+  `GTM_WW_SHARED_APP_DIR`) independently of the GitHub checkout. It refuses to
+  silently create a private copy next to the code.
+- Each person runs a local copy of `server.py` on their laptop. Saves now first
+  create unique, append-only records in `commentary_updates`; `commentary.json`
+  is the merged, readable view. Distinct users' and L3s' updates therefore do
+  not depend on a process-local lock or a whole-file write winning OneDrive's
+  sync race.
+- Refresh, restart, and API reads merge the journal with the current JSON view.
+  A saved update remains recoverable if OneDrive later syncs an older
+  `commentary.json` over a newer one. The client pulls shared commentary on
+  startup, on focus, and periodically while open.
+- OneDrive synchronization is still eventually consistent, so another laptop
+  sees an update after sync completes. Same-field edits made simultaneously
+  resolve by the journal's timestamp order; the individual update records remain
+  available even if their materialized JSON view conflicts.
 
 ## What this means in practice
 
-- Notes eventually show up for everyone once OneDrive finishes syncing.
-- **Two people editing the *same* note at close to the same moment is risky.** OneDrive
-  can create a "conflicted copy" of the file, or one person's edit can silently overwrite
-  the other's, because there's no real coordination between the two local copies.
+- Notes eventually show up for everyone once OneDrive finishes syncing, provided
+  each user is running the journal-aware server version.
+- **The JSON view can still produce OneDrive conflict copies**, but unique
+  journal records preserve updates and are merged back into the view on the next
+  read/save. This protects different-L3 work without claiming OneDrive is a
+  real-time transactional database.
 - **The app is not "always on."** If nobody's laptop has the local program running, the
   editable/commentary part of the app isn't reachable — although the OneDrive-synced
   files themselves are still safe and visible in the folder.

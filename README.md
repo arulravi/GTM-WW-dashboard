@@ -39,9 +39,13 @@ run `Start Web App.bat` at login (or ask to enable auto-start).
 
 The application code may live in a GitHub clone, but commentary remains in the
 existing SharePoint folder synced by OneDrive. `server.py` resolves
-`<OneDriveCommercial>\Expenses\FY26\Claude Project\GTM WW dashboard` and reads
-and writes its `commentary.json`, `commentary_meta.json`, and deletion requests.
-All L3 pages keep separate scope keys in the shared commentary file.
+`<OneDriveCommercial>\Expenses\FY26\Claude Project\GTM WW dashboard`. The
+materialized `commentary.json` is accompanied by an append-only
+`commentary_updates` folder. Each save is written as a uniquely named update
+before the JSON view is refreshed, so two laptops syncing at once cannot erase
+each other's different L3 updates by replacing the same whole file. Refreshes
+and restarts read the merged view; malformed or missing shared data is an error,
+not an invitation to initialize an empty file.
 
 The migration issue was that the old server stored `commentary.json` beside
 `server.py`. When the code was launched from a GitHub checkout, that made a
@@ -52,6 +56,10 @@ If the synced folder is in a different local location, set
 `GTM_WW_SHARED_APP_DIR` to that folder before starting the server. The server
 fails clearly when it cannot find the shared folder rather than silently saving
 commentary to a private GitHub checkout.
+
+All users need to run the updated server code for journal-backed saves. Updates
+still appear to other users after OneDrive has synchronized the shared folder;
+OneDrive synchronization itself is not instantaneous.
 
 ## The executive dashboard — `dashboard.html`
 A polished, single-page executive view (the leadership-ready one).

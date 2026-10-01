@@ -37,69 +37,28 @@ import subprocess
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import refresh
+from commentary_store import (
+    append_update,
+    materialize_shared_data,
+    read_shared_data,
+    resolve_shared_app_dir,
+    shared_data_revision,
+)
 
 HERE = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
         else os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PORT = 8770
 SNAPSHOT_DIR = os.path.join(HERE, "snapshots")
 
-# The app code can be launched from a GitHub checkout, but editable data must
-# continue to live in the team's existing SharePoint library synced by OneDrive.
-# Never silently create a private commentary.json beside a GitHub clone.
-_SHARED_APP_RELATIVE_PATH = os.path.join(
-    "Expenses", "FY26", "Claude Project", "GTM WW dashboard"
-)
-
-
-def _resolve_shared_app_dir() -> str:
-    configured = os.environ.get("GTM_WW_SHARED_APP_DIR")
-    if configured:
-        path = os.path.abspath(os.path.expandvars(os.path.expanduser(configured)))
-        if not os.path.isdir(path):
-            raise RuntimeError(
-                f"GTM_WW_SHARED_APP_DIR does not exist: {path}. "
-                "Set it to the locally synced GTM WW dashboard SharePoint folder."
-            )
-        return path
-
-    roots = [
-        os.environ.get("OneDriveCommercial"),
-        os.environ.get("OneDrive"),
-        os.path.join(os.path.expanduser("~"), "OneDrive - Adobe"),
-    ]
-    seen = set()
-    for root in roots:
-        if not root:
-            continue
-        root = os.path.abspath(os.path.expandvars(os.path.expanduser(root)))
-        if root in seen:
-            continue
-        seen.add(root)
-        candidate = os.path.join(root, _SHARED_APP_RELATIVE_PATH)
-        if os.path.isdir(candidate):
-            return candidate
-
-    raise RuntimeError(
-        "The shared GTM WW dashboard SharePoint folder was not found. "
-        "Sync it with OneDrive, or set GTM_WW_SHARED_APP_DIR to its local path. "
-        "Commentary is not saved beside a GitHub checkout because that would "
-        "create a private copy that other users cannot see."
-    )
-
-
-SHARED_APP_DIR = _resolve_shared_app_dir()
+SHARED_APP_DIR = resolve_shared_app_dir()
 COMMENTARY_PATH = os.path.join(SHARED_APP_DIR, "commentary.json")
 COMMENTARY_META_PATH = os.path.join(SHARED_APP_DIR, "commentary_meta.json")
 DELETION_REQUESTS_PATH = os.path.join(SHARED_APP_DIR, "deletion_requests.json")
 PROTECT_AFTER_DAYS = 10
 
-# ThreadingHTTPServer runs each request in its own thread; with multiple
-# people saving commentary at once, two threads could otherwise both read the
-# same commentary.json, merge in memory, and write back -- the second write
-# wins and silently drops whatever the first one added. This lock serializes
-# the whole read-merge-write so saves stack instead of racing. The deletion
-# request queue is a separate file, so it gets its own lock rather than
-# contending with every ordinary commentary save.
+# The lock serializes local requests. Cross-device writes are separate
+# immutable journal entries, so OneDrive cannot make one user's whole-file
+# replacement erase another user's save.
 _commentary_lock = threading.Lock()
 _deletion_lock = threading.Lock()
 
@@ -190,74 +149,57 @@ class Handler(SimpleHTTPRequestHandler):
         elif self.path == "/api/commentary":
             try:
                 payload = json.loads(self._read_body() or b"{}")
-                # Merge rather than overwrite, and merge at the FIELD level
-                # (not just the scope-key level): a browser tab only knows the
-                # scopes/fields it has loaded or edited via its own
-                # localStorage, so replacing a whole scope-key's dict would
-                # silently drop a colleague's fields for that same scope that
-                # this tab never saw (e.g. their note on a different cost
-                # element in the same quarter). Field-level merge means two
-                # people editing the same scope, on different machines, both
-                # keep their notes even if neither has the other's yet.
-                #
-                # Locked + atomic (write to a temp file, then os.replace): with
-                # multiple people saving at once, this serializes the
-                # read-merge-write so one save can never clobber another's,
-                # and a crash or concurrent read mid-write can never see a
-                # half-written file.
+                if not isinstance(payload, dict):
+                    raise ValueError("Commentary payload must be a JSON object")
                 with _commentary_lock:
-                    existing = _load_json(COMMENTARY_PATH, {})
-                    meta = _load_json(COMMENTARY_META_PATH, {})
+                    existing, meta = read_shared_data(SHARED_APP_DIR)
                     now = _now_iso()
                     blocked = []  # [(scope, field)] -- protected deletes we refused
+                    changes = {}
+                    meta_changes = {}
                     for scope_key, fields in payload.items():
-                        if isinstance(fields, dict):
-                            tgt = existing.setdefault(scope_key, {})
-                            for f, v in fields.items():
-                                is_delete = v is None or (isinstance(v, str) and v.strip() == "")
-                                if is_delete:
-                                    # An empty/blank value is normally an explicit
-                                    # DELETE of that field -- but a protected
-                                    # field (see Add Commentary Deletion
-                                    # Approval Control) can only ever be removed
-                                    # through the approve step in
-                                    # /api/deletion-requests/resolve. This is
-                                    # the real backstop: even if the UI's own
-                                    # confirm/request-instead flow gets
-                                    # bypassed or a stale page is still open,
-                                    # the server itself refuses to drop a
-                                    # protected value here. We just skip it --
-                                    # `existing` keeps whatever it already had,
-                                    # so the very next GET/merge shows the
-                                    # untouched value again.
-                                    if f in tgt and _is_protected(scope_key, f, meta):
-                                        blocked.append((scope_key, f))
-                                        continue
-                                    tgt.pop(f, None)
-                                    (meta.get(scope_key) or {}).pop(f, None)
-                                else:
-                                    is_new = f not in tgt
-                                    tgt[f] = v
+                        if not isinstance(scope_key, str) or not isinstance(fields, dict):
+                            raise ValueError("Each commentary scope must contain a JSON object")
+                        tgt = existing.setdefault(scope_key, {})
+                        for field, value in fields.items():
+                            if not isinstance(field, str) or not (
+                                value is None or isinstance(value, str)
+                            ):
+                                raise ValueError("Commentary fields must be text or null")
+                            is_delete = value is None or not value.strip()
+                            if is_delete:
+                                if field not in tgt:
+                                    continue
+                                if field in tgt and _is_protected(scope_key, field, meta):
+                                    blocked.append((scope_key, field))
+                                    continue
+                                tgt.pop(field, None)
+                                (meta.get(scope_key) or {}).pop(field, None)
+                                changes.setdefault(scope_key, {})[field] = None
+                                meta_changes.setdefault(scope_key, {})[field] = None
+                            else:
+                                is_new = field not in tgt
+                                if is_new or tgt[field] != value:
+                                    tgt[field] = value
                                     mscope = meta.setdefault(scope_key, {})
                                     if is_new:
-                                        mscope[f] = {"baseline": False, "created_at": now, "updated_at": now}
-                                    elif f in mscope:
-                                        # Material edit to a field we're already
-                                        # tracking -- resets the 10-day clock.
-                                        # (Nothing to do for a pre-existing/
-                                        # baseline field with no record: it has
-                                        # no clock to reset, it's just always
-                                        # protected.)
-                                        mscope[f]["updated_at"] = now
-                            if not tgt:               # scope emptied out -> drop it
-                                existing.pop(scope_key, None)
-                                meta.pop(scope_key, None)
-                            elif not meta.get(scope_key):
-                                meta.pop(scope_key, None)
-                        else:
-                            existing[scope_key] = fields
-                    _save_json_atomic(COMMENTARY_PATH, existing)
-                    _save_json_atomic(COMMENTARY_META_PATH, meta)
+                                        mscope[field] = {
+                                            "baseline": False,
+                                            "created_at": now,
+                                            "updated_at": now,
+                                        }
+                                    elif field in mscope:
+                                        mscope[field]["updated_at"] = now
+                                    changes.setdefault(scope_key, {})[field] = value
+                                    meta_changes.setdefault(scope_key, {})[field] = mscope.get(field)
+                        if not tgt:
+                            existing.pop(scope_key, None)
+                            meta.pop(scope_key, None)
+                        elif not meta.get(scope_key):
+                            meta.pop(scope_key, None)
+                    if changes:
+                        append_update(SHARED_APP_DIR, changes, meta_changes)
+                        existing, meta = materialize_shared_data(SHARED_APP_DIR)
                 resp = {"ok": True, "commentary": existing}
                 if blocked:
                     resp["blocked"] = [{"scope": s, "field": f} for s, f in blocked]
@@ -274,7 +216,7 @@ class Handler(SimpleHTTPRequestHandler):
                     self._send_json({"ok": False, "error": "scope and field are required"}, 400)
                     return
                 with _commentary_lock:
-                    existing = _load_json(COMMENTARY_PATH, {})
+                    existing, _ = read_shared_data(SHARED_APP_DIR)
                     value = (existing.get(scope) or {}).get(field)
                 if value is None or not str(value).strip():
                     self._send_json({"ok": False, "error": "nothing to delete for that scope/field"}, 400)
@@ -322,16 +264,19 @@ class Handler(SimpleHTTPRequestHandler):
                         # protected field's value -- everywhere else (the
                         # regular /api/commentary save) refuses to.
                         with _commentary_lock:
-                            existing = _load_json(COMMENTARY_PATH, {})
-                            meta = _load_json(COMMENTARY_META_PATH, {})
+                            existing, meta = read_shared_data(SHARED_APP_DIR)
                             scope_dict = existing.get(rec["scope"])
                             if scope_dict is not None:
                                 scope_dict.pop(rec["field"], None)
                                 if not scope_dict:
                                     existing.pop(rec["scope"], None)
                             (meta.get(rec["scope"]) or {}).pop(rec["field"], None)
-                            _save_json_atomic(COMMENTARY_PATH, existing)
-                            _save_json_atomic(COMMENTARY_META_PATH, meta)
+                            append_update(
+                                SHARED_APP_DIR,
+                                {rec["scope"]: {rec["field"]: None}},
+                                {rec["scope"]: {rec["field"]: None}},
+                            )
+                            materialize_shared_data(SHARED_APP_DIR)
                     rec["status"] = "approved" if action == "approve" else "rejected"
                     rec["resolved_by"] = resolved_by
                     rec["resolved_at"] = _now_iso()
@@ -382,10 +327,9 @@ class Handler(SimpleHTTPRequestHandler):
             # client can tell which fields are protected (see Add Commentary
             # Deletion Approval Control) without a second round trip.
             try:
-                data = _load_json(COMMENTARY_PATH, {})
-                meta = _load_json(COMMENTARY_META_PATH, {})
+                data, meta = read_shared_data(SHARED_APP_DIR)
                 self._send_json({"ok": True, "commentary": data, "meta": meta,
-                                  "modified": os.path.getmtime(COMMENTARY_PATH) if os.path.isfile(COMMENTARY_PATH) else 0})
+                                  "modified": shared_data_revision(SHARED_APP_DIR)})
             except Exception as e:
                 self._send_json({"ok": False, "error": str(e)}, 500)
             return

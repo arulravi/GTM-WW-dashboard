@@ -30,6 +30,12 @@ import datetime
 import openpyxl
 
 import db
+from commentary_store import (
+    append_update,
+    materialize_shared_data,
+    read_shared_data,
+    resolve_shared_app_dir,
+)
 
 # When packaged as an .exe (PyInstaller), read/write next to the exe so the
 # refreshed data.js and commentary.json live beside the app, not in a temp dir.
@@ -588,32 +594,17 @@ def build_data() -> dict:
     quarters = sorted({row[4] for row in opex_out}, key=q_key)
 
     # ---- merge saved commentary -------------------------------------------
-    commentary = {}
-    cpath = os.path.join(HERE, "commentary.json")
-    if os.path.isfile(cpath):
-        try:
-            with open(cpath, "r", encoding="utf-8") as f:
-                commentary = json.load(f)
-            log("  merged commentary.json")
-        except Exception as e:
-            log("  WARN commentary.json:", e)
+    shared_app_dir = resolve_shared_app_dir()
+    commentary, commentary_meta = read_shared_data(shared_app_dir)
+    log("  merged shared commentary and update journal")
 
     # Deletion-approval metadata (see server.py's Add Commentary Deletion
     # Approval Control) -- baked in too so a fresh page load (before the
     # client's own live poll of /api/commentary lands) already knows which
     # fields are protected, and so a Save Final Snapshot export carries the
     # same protection state as the live app.
-    commentary_meta = {}
-    mpath = os.path.join(HERE, "commentary_meta.json")
-    if os.path.isfile(mpath):
-        try:
-            with open(mpath, "r", encoding="utf-8") as f:
-                commentary_meta = json.load(f)
-        except Exception as e:
-            log("  WARN commentary_meta.json:", e)
-
     deletion_requests = []
-    dpath = os.path.join(HERE, "deletion_requests.json")
+    dpath = os.path.join(shared_app_dir, "deletion_requests.json")
     if os.path.isfile(dpath):
         try:
             with open(dpath, "r", encoding="utf-8") as f:
@@ -621,16 +612,23 @@ def build_data() -> dict:
         except Exception as e:
             log("  WARN deletion_requests.json:", e)
 
-    # Auto-carry manual commentary forward when a new Outlook snapshot appears
-    # (Forecast vs WKx notes become WKnew vs WKx, etc.). Non-destructive; when
-    # it adds anything, persist commentary.json so the rollover survives.
-    try:
-        if rollover_snapshot_commentary(commentary, wk_keys, f"qrf{cq_num}"):
-            with open(cpath, "w", encoding="utf-8") as f:
-                json.dump(commentary, f, ensure_ascii=False, indent=2)
-            log("  wrote rolled-over commentary.json")
-    except Exception as e:
-        log("  WARN snapshot commentary rollover:", e)
+    # Snapshot rollover writes only newly carried fields to the journal. It
+    # never writes a stale whole-file copy over a user's concurrent save.
+    before_rollover = {
+        scope: dict(fields) for scope, fields in commentary.items()
+        if isinstance(fields, dict)
+    }
+    if rollover_snapshot_commentary(commentary, wk_keys, f"qrf{cq_num}"):
+        changes = {}
+        for scope, fields in commentary.items():
+            previous = before_rollover.get(scope, {})
+            for field, value in fields.items():
+                if previous.get(field) != value:
+                    changes.setdefault(scope, {})[field] = value
+        if changes:
+            append_update(shared_app_dir, changes)
+            commentary, commentary_meta = materialize_shared_data(shared_app_dir)
+            log("  journaled rolled-over commentary")
 
     data = {
         "meta": {
