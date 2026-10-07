@@ -3000,6 +3000,16 @@ function buildSnapshotHtml(keys, extraGroups){
   const labels=[...keys.map(k=>(SCOPE_TABS.find(t=>t.key===k)||{}).label||k), ...extraGroups.map(g=>g.label)];
   dataCopy.meta.snapshot_scope=labels.join(", ")+" · "+state.q;
   const clone=document.documentElement.cloneNode(true);
+  // Textarea values are properties, not serialized markup; preserve them so
+  // frozen notes don't reopen as blank, apparently edited fields.
+  const liveTextareas=document.querySelectorAll("textarea");
+  clone.querySelectorAll("textarea").forEach((ta,i)=>{
+    const live=liveTextareas[i];
+    if(!live) return;
+    ta.value=live.value;
+    ta.textContent=live.value;
+    if(ta.classList.contains("cmt")) ta.setAttribute("data-loaded",live.value);
+  });
   const extScript=clone.querySelector('script[src="data.js"]');
   const inline=document.createElement("script");
   inline.textContent="window.OPEX_DATA = "+JSON.stringify(dataCopy)+";";
