@@ -2558,11 +2558,8 @@ function renderNoteCard(cardId, fk, icon, label, placeholder, comm){
   const existingTa=el.querySelector("textarea");
   const liveUnsaved=existingTa && existingTa.value!==existingTa.dataset.loaded;
   const val=liveUnsaved ? existingTa.value : (comm[fk]||"");
-  const snapshotRo=window.__SNAPSHOT_RO_COMMENTARY;
-  if(cardId==="roCard" && snapshotRo && snapshotRo.scope===scopeKey() &&
-     snapshotRo.field===fk && val.trim()){
+  if(cardId==="roCard" && window.__SNAPSHOT_TABS && val.trim()){
     __notesForceOpen[fk]=true;
-    window.__SNAPSHOT_RO_COMMENTARY=null;
   }
   if(!val.trim() && !__notesForceOpen[fk]){
     el.innerHTML=`<button class="btn" onclick="showNoteCard('${esc(cardId)}','${esc(fk)}','${esc(icon)}','${esc(label)}','${esc(placeholder)}')">➕ Add ${esc(icon)} ${esc(label)}</button>`;
@@ -2999,10 +2996,6 @@ function buildSnapshotHtml(keys, extraGroups){
   const {data:filtered}=filterDataByL3(D, keys, extraGroups);
   const dataCopy=JSON.parse(JSON.stringify(filtered));
   dataCopy.commentary=collectAllCommentary();
-  const roField=cmtField("Risks and Opportunities",state.cur,state.tgt);
-  const roScope=scopeKey();
-  const roValue=(dataCopy.commentary[roScope]||{})[roField]||"";
-  const snapshotRo=roValue.trim()?{scope:roScope,field:roField}:null;
   dataCopy.meta.snapshot_at=new Date().toLocaleString();
   const labels=[...keys.map(k=>(SCOPE_TABS.find(t=>t.key===k)||{}).label||k), ...extraGroups.map(g=>g.label)];
   dataCopy.meta.snapshot_scope=labels.join(", ")+" · "+state.q;
@@ -3021,7 +3014,6 @@ function buildSnapshotHtml(keys, extraGroups){
     "window.__SNAPSHOT_EXTRA_GROUPS = "+JSON.stringify(extraGroups)+";\n"+
     "window.__SNAPSHOT_STATE = "+JSON.stringify({scope:state.scope, sub:state.sub, l4:state.l4,
       q:state.q, cur:state.cur, tgt:state.tgt, mode:state.mode})+";\n"+
-    "window.__SNAPSHOT_RO_COMMENTARY = "+JSON.stringify(snapshotRo)+";\n"+
     "window.__SNAPSHOT_COLPREFS = "+JSON.stringify(walkColPrefs())+";\n"+
     // Chrome opens window.open() popups at 100% zoom regardless of the
     // opener tab's own browser zoom -- if the live app was being viewed at,
